@@ -10,7 +10,7 @@ from packaging import version
 
 from .logger import get_logger
 
-logger = get_logger("fastapi_websocket_rpc.utils")
+logger = get_logger("fastapi_ws_rpc.utils")
 
 
 class RandomUtils(object):

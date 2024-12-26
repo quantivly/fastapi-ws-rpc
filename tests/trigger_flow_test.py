@@ -10,10 +10,10 @@ import pytest
 import uvicorn
 from fastapi import APIRouter, FastAPI, WebSocket
 
-from fastapi_websocket_rpc.rpc_methods import RpcMethodsBase
-from fastapi_websocket_rpc.utils import gen_uid
-from fastapi_websocket_rpc.websocket_rpc_client import WebSocketRpcClient
-from fastapi_websocket_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
+from fastapi_ws_rpc.rpc_methods import RpcMethodsBase
+from fastapi_ws_rpc.utils import gen_uid
+from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
+from fastapi_ws_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
 
 # Configurable
 PORT = int(os.environ.get("PORT") or "9000")

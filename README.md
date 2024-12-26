@@ -33,7 +33,7 @@ Method return values are sent back as RPC responses, which the other side can wa
 Supports and tested on Python >= 3.7
 ## Installation 🛠️
 ```
-pip install fastapi_websocket_rpc
+pip install fastapi_ws_rpc
 ```
 
 
@@ -58,18 +58,21 @@ getting the response with the return value.
 ## Usage example:
 
 ### Server:
+
 ```python
 import uvicorn
 from fastapi import FastAPI
-from fastapi_websocket_rpc import RpcMethodsBase, WebsocketRPCEndpoint
+from fastapi_ws_rpc import RpcMethodsBase, WebsocketRPCEndpoint
+
 
 # Methods to expose to the clients
 class ConcatServer(RpcMethodsBase):
     async def concat(self, a="", b=""):
         return a + b
 
+
 # Init the FAST-API app
-app =  FastAPI()
+app = FastAPI()
 # Create an endpoint and load it with the methods to expose
 endpoint = WebsocketRPCEndpoint(ConcatServer())
 # add the endpoint to the app
@@ -79,9 +82,11 @@ endpoint.register_route(app, "/ws")
 uvicorn.run(app, host="0.0.0.0", port=9000)
 ```
 ### Client
+
 ```python
 import asyncio
-from fastapi_websocket_rpc import RpcMethodsBase, WebSocketRpcClient
+from fastapi_ws_rpc import RpcMethodsBase, WebSocketRpcClient
+
 
 async def run_client(uri):
     async with WebSocketRpcClient(uri, RpcMethodsBase()) as client:
@@ -90,9 +95,10 @@ async def run_client(uri):
         # print result
         print(response.result)  # will print "hello world"
 
+
 # run the client until it completes interaction with server
 asyncio.get_event_loop().run_until_complete(
-    run_client("ws://localhost:9000/ws")
+  run_client("ws://localhost:9000/ws")
 )
 ```
 
@@ -116,12 +122,12 @@ Websockets are ideal to create bi-directional realtime connections over the web.
 
 
 ## Concepts
-- [RpcChannel](fastapi_websocket_rpc/rpc_channel.py) - implements the RPC-protocol over the websocket
+- [RpcChannel](fastapi_ws_rpc/rpc_channel.py) - implements the RPC-protocol over the websocket
     - Sending RpcRequests per method call
     - Creating promises to track them (via unique call ids), and allow waiting for responses
     - Executing methods on the remote side and serializing return values as
     - Receiving RpcResponses and delivering them to waiting callers
-- [RpcMethods](fastapi_websocket_rpc/rpc_methods.py) - classes passed to both client and server-endpoint inits to expose callable methods to the other side.
+- [RpcMethods](fastapi_ws_rpc/rpc_methods.py) - classes passed to both client and server-endpoint inits to expose callable methods to the other side.
     - Simply derive from RpcMethodsBase and add your own async methods
     - Note currently only key-word arguments are supported
     - Checkout RpcUtilityMethods for example methods, which are also useful debugging utilities
@@ -143,13 +149,15 @@ Websockets are ideal to create bi-directional realtime connections over the web.
 
 ## Logging
 fastapi-websocket-rpc provides a helper logging module to control how it produces logs for you.
-See [fastapi_websocket_rpc/logger.py](fastapi_websocket_rpc/logger.py).
+See [fastapi_websocket_rpc/logger.py](fastapi_ws_rpc/logger.py).
 Use ```logging_config.set_mode``` or the 'WS_RPC_LOGGING' environment variable to choose the logging method you prefer or override completely via default logging config.
 
 example:
+
 ```python
 # set RPC to log like UVICORN
-from fastapi_websocket_rpc.logger import logging_config, LoggingModes
+from fastapi_ws_rpc.logger import logging_config, LoggingModes
+
 logging_config.set_mode(LoggingModes.UVICORN)
 ```
 

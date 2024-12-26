@@ -4,7 +4,7 @@ import random
 import uvicorn
 from fastapi import FastAPI
 
-from fastapi_websocket_rpc import RpcMethodsBase, WebsocketRPCEndpoint, logger
+from fastapi_ws_rpc import RpcMethodsBase, WebsocketRPCEndpoint, logger
 
 # Set debug logging
 logger.logging_config.set_mode(logger.LoggingModes.UVICORN, logger.logging.DEBUG)

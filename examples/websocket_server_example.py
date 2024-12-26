@@ -1,8 +1,8 @@
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, WebSocket
 
-from fastapi_websocket_rpc.rpc_methods import RpcUtilityMethods
-from fastapi_websocket_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
+from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
+from fastapi_ws_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
 
 
 async def get_token_header(x_token: str = Header(...)):

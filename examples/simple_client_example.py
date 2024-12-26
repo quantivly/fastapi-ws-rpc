@@ -1,6 +1,6 @@
 import asyncio
 
-from fastapi_websocket_rpc import RpcMethodsBase, WebSocketRpcClient
+from fastapi_ws_rpc import RpcMethodsBase, WebSocketRpcClient
 
 PORT = 9000
 

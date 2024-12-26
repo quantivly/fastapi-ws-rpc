@@ -7,13 +7,13 @@ import pytest
 import uvicorn
 from fastapi import FastAPI
 
-from fastapi_websocket_rpc import WebSocketFrameType
-from fastapi_websocket_rpc.logger import LoggingModes, logging_config
-from fastapi_websocket_rpc.rpc_methods import RpcUtilityMethods
-from fastapi_websocket_rpc.simplewebsocket import SimpleWebSocket
-from fastapi_websocket_rpc.utils import pydantic_serialize
-from fastapi_websocket_rpc.websocket_rpc_client import WebSocketRpcClient
-from fastapi_websocket_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
+from fastapi_ws_rpc import WebSocketFrameType
+from fastapi_ws_rpc.logger import LoggingModes, logging_config
+from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
+from fastapi_ws_rpc.simplewebsocket import SimpleWebSocket
+from fastapi_ws_rpc.utils import pydantic_serialize
+from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
+from fastapi_ws_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
 
 # Set debug logs (and direct all logs to UVICORN format)
 logging_config.set_mode(LoggingModes.UVICORN, logging.DEBUG)

@@ -1,0 +1,32 @@
+[tool.poetry]
+name = "fastapi_ws_rpc"
+version = "0.1.0"
+description = "A fast and durable bidirectional JSON RPC channel over Websockets and FastApi."
+readme = "README.md"
+license = "MIT"
+authors = ["Or Weis <or@permit.io>"]
+homepage = "https://github.com/permitio/fastapi_websocket_rpc"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: Internet :: WWW/HTTP :: WSGI"
+]
+keywords = ["fastapi", "websockets", "rpc", "json", "bidirectional"]
+
+[tool.poetry.dependencies]
+python = ">=3.7"
+fastapi = ">=0.78.0,<1"
+packaging = ">=20.4"
+pydantic = ">=1.9.1"
+uvicorn = ">=0.17.6,<1"
+websockets = ">=10.3,<11"
+tenacity = ">=8.0.1,<9"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.0"  # Add any development dependencies here
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

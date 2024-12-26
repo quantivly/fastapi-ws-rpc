@@ -5,7 +5,7 @@ client as well
 """
 import asyncio
 
-from fastapi_websocket_rpc import RpcMethodsBase, WebSocketRpcClient, logger
+from fastapi_ws_rpc import RpcMethodsBase, WebSocketRpcClient, logger
 
 # set fastapi-websocket-rpc logging to DEBUG
 logger.logging_config.set_mode(logger.LoggingModes.UVICORN, logger.logging.DEBUG)

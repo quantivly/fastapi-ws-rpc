@@ -1,7 +1,7 @@
 import uvicorn
 from fastapi import FastAPI
 
-from fastapi_websocket_rpc import RpcMethodsBase, WebsocketRPCEndpoint
+from fastapi_ws_rpc import RpcMethodsBase, WebsocketRPCEndpoint
 
 
 # Methods to expose to the clients

@@ -105,7 +105,7 @@ class RpcCaller:
         self._channel = channel
 
     def __getattribute__(self, name: str):
-        """Returns an :class:`~fastapi_websocket_rpc.rpc_channel.RpcProxy` instance
+        """Returns an :class:`~fastapi_ws_rpc.rpc_channel.RpcProxy` instance
         for exposed RPC methods.
 
         Parameters

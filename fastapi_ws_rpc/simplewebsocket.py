@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from .logger import get_logger
 from .utils import pydantic_serialize
 
-logger = get_logger("fastapi_websocket_rpc.simplewebsocket")
+logger = get_logger("fastapi_ws_rpc.simplewebsocket")
 
 
 class SimpleWebSocket(ABC):

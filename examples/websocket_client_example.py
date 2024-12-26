@@ -1,7 +1,7 @@
 import asyncio
 
-from fastapi_websocket_rpc.rpc_methods import RpcUtilityMethods
-from fastapi_websocket_rpc.websocket_rpc_client import WebSocketRpcClient
+from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
+from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
 
 
 async def run_client(uri):
