@@ -9,38 +9,23 @@ from contextlib import suppress
 from typing import Any, Dict, List, Optional, Type, Union
 
 import tenacity
+import websockets
 from tenacity import retry, wait
 from tenacity.retry import retry_if_exception
+from websockets.exceptions import (
+    ConnectionClosed,
+    ConnectionClosedError,
+    ConnectionClosedOK,
+    InvalidStatus,
+    WebSocketException,
+)
 
 from .logger import get_logger
 from .rpc_channel import OnConnectCallback, OnDisconnectCallback, RpcChannel
 from .rpc_methods import PING_RESPONSE, RpcMethodsBase
 from .simplewebsocket import JsonSerializingWebSocket, SimpleWebSocket
 
-# Import our wrapper to handle websockets version differences
-from .websocket_wrapper import (
-    ConnectionClosed,
-    ConnectionClosedError,
-    ConnectionClosedOK,
-    InvalidStatus,
-    WebSocketException,
-    connect,
-)
-
-logger = get_logger("RPC_CLIENT")
-
-
-def isNotInvalidStatusCode(value: Any) -> bool:
-    """
-    Check if the exception is not an InvalidStatus exception.
-
-    Args:
-        value: The exception to check.
-
-    Returns:
-        bool: True if the exception is not an InvalidStatus, False otherwise.
-    """
-    return not isinstance(value, InvalidStatus)
+logger = get_logger(__name__)
 
 
 def isNotForbidden(value: Any) -> bool:
@@ -141,6 +126,9 @@ class WebSocketRpcClient:
         self.methods = methods or RpcMethodsBase()
         self.connect_kwargs = kwargs
 
+        # Set default timeout if not specified
+        self.connect_kwargs.setdefault("open_timeout", 30)
+
         # State variables
         self.ws = None
         self.channel = None
@@ -190,11 +178,11 @@ class WebSocketRpcClient:
             try:
                 logger.info(f"Connecting to {self.uri}...")
 
-                # Create WebSocket connection using our version-agnostic wrapper
+                # Create WebSocket connection
                 logger.debug(
                     f"Creating WebSocket connection to {self.uri} with parameters: {self.connect_kwargs}"  # noqa: E501
                 )
-                raw_ws = await connect(self.uri, **self.connect_kwargs)
+                raw_ws = await websockets.connect(self.uri, **self.connect_kwargs)
 
                 # Wrap with serialization
                 logger.debug(
