@@ -2,6 +2,7 @@
 Websocket wrapper module to ensure backward compatibility with different
 websockets versions and improve consistent error handling.
 """
+import os
 from typing import Any
 
 import websockets
@@ -104,90 +105,41 @@ async def connect(uri: str, **kwargs: Any) -> Any:
     """
     logger.debug(f"Connecting to {uri} with websockets v{websockets.__version__}")
 
-    # Extract proxy settings which need special handling
-    http_proxy_host = kwargs.pop("http_proxy_host", None)
-    http_proxy_port = kwargs.pop("http_proxy_port", None)
-    http_proxy_auth = kwargs.pop("http_proxy_auth", None)
+    # Handle proxy settings
+    # For v15+, use environment variables
+    if IS_V15_OR_HIGHER:
+        http_proxy_host = kwargs.pop("http_proxy_host", None)
+        http_proxy_port = kwargs.pop("http_proxy_port", None)
+        http_proxy_auth = kwargs.pop("http_proxy_auth", None)
 
-    # In v15+, proxy settings are handled differently
-    if IS_V15_OR_HIGHER and http_proxy_host:
-        logger.debug(f"Setting up proxy for v15+: {http_proxy_host}:{http_proxy_port}")
+        if http_proxy_host:
+            # Check if we're connecting via wss:// or ws://
+            is_secure = uri.startswith("wss://")
+            env_var_name = "WSS_PROXY" if is_secure else "WS_PROXY"
 
-        try:
-            # In websockets v15+, Proxy is now in websockets.legacy.proxy
-            from websockets.legacy.proxy import Proxy
-
-            # Create a proxy from the settings
-            if http_proxy_auth:
-                proxy_url = (
-                    f"http://{http_proxy_auth}@{http_proxy_host}:{http_proxy_port}"
-                )
-            else:
-                proxy_url = f"http://{http_proxy_host}:{http_proxy_port}"
-
-            proxy = Proxy(proxy_url)
-            kwargs["proxy"] = proxy
-            logger.debug(f"Created proxy object for {proxy_url}")
-
-        except ImportError:
-            # If we can't import Proxy from legacy.proxy, try another path
-            try:
-                from websockets.typing import Proxy  # type: ignore[import]
-
-                # Create a proxy from the settings
+            # If the proxy environment variable isn't already set, set it now
+            if env_var_name not in os.environ and http_proxy_host:
+                proxy_url = f"http://{http_proxy_host}"
+                if http_proxy_port:
+                    proxy_url += f":{http_proxy_port}"
                 if http_proxy_auth:
-                    proxy_url = (
-                        f"http://{http_proxy_auth}@{http_proxy_host}:{http_proxy_port}"
-                    )
-                else:
-                    proxy_url = f"http://{http_proxy_host}:{http_proxy_port}"
+                    # Split the auth into username and password if it contains a colon
+                    if ":" in http_proxy_auth:
+                        username, password = http_proxy_auth.split(":", 1)
+                        proxy_url = f"http://{username}:{password}@{http_proxy_host}"
+                        if http_proxy_port:
+                            proxy_url += f":{http_proxy_port}"
 
-                proxy = Proxy(proxy_url)
-                kwargs["proxy"] = proxy
-                logger.debug(f"Created proxy object from typing for {proxy_url}")
-
-            except ImportError:
-                # Last resort: try to get any Proxy class from the websockets package
-                logger.warning(
-                    "Could not import Proxy class from expected locations. "
-                    "Attempting to find any available Proxy class in websockets."
+                logger.info(
+                    f"Setting {env_var_name}={proxy_url} for websockets v15+ proxy support"  # noqa: E501
                 )
-                try:
-                    # Try a more general approach to find the Proxy class
-                    import pkgutil
+                os.environ[env_var_name] = proxy_url
 
-                    proxy_class = None
-                    for _, name, _ in pkgutil.iter_modules(websockets.__path__):
-                        try:
-                            module = __import__(
-                                f"websockets.{name}", fromlist=["Proxy"]
-                            )
-                            if hasattr(module, "Proxy"):
-                                proxy_class = module.Proxy
-                                logger.debug(f"Found Proxy class in websockets.{name}")
-                                break
-                        except ImportError:
-                            continue
-
-                    if proxy_class:
-                        # Create a proxy from the settings
-                        if http_proxy_auth:
-                            proxy_url = f"http://{http_proxy_auth}@{http_proxy_host}:{http_proxy_port}"  # noqa: E501
-                        else:
-                            proxy_url = f"http://{http_proxy_host}:{http_proxy_port}"
-
-                        proxy = proxy_class(proxy_url)
-                        kwargs["proxy"] = proxy
-                        logger.debug(
-                            f"Created proxy object from discovered class for {proxy_url}"  # noqa: E501
-                        )
-                    else:
-                        logger.error(
-                            "Could not find Proxy class in websockets. "
-                            "Proxy settings will not be applied."
-                        )
-                except Exception as e:
-                    logger.error(f"Error searching for Proxy class: {e}")
+                # Also set the standard proxy variables as fallback
+                if is_secure:
+                    os.environ.setdefault("HTTPS_PROXY", proxy_url)
+                else:
+                    os.environ.setdefault("HTTP_PROXY", proxy_url)
 
     # Handle ping_interval and ping_timeout in a version-compatible way
     if IS_V11_OR_HIGHER:
@@ -206,13 +158,11 @@ async def connect(uri: str, **kwargs: Any) -> Any:
 
         return connection
     else:
-        # For v10 and earlier versions
-        # If we have proxy settings, add them back for pre-v15
-        if not IS_V15_OR_HIGHER and http_proxy_host:
-            kwargs["http_proxy_host"] = http_proxy_host
-            if http_proxy_port:
-                kwargs["http_proxy_port"] = http_proxy_port
-            if http_proxy_auth:
-                kwargs["http_proxy_auth"] = http_proxy_auth
-
-        return await websockets.connect(uri, **kwargs)
+        # For v10 and earlier, everything works differently
+        # Add proxy settings back for older versions
+        if not IS_V15_OR_HIGHER and "http_proxy_host" in kwargs:
+            # This block won't execute with v15+ because we've already
+            # removed these keys from kwargs
+            return await websockets.connect(uri, **kwargs)
+        else:
+            return await websockets.connect(uri, **kwargs)
