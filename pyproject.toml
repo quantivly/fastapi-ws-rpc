@@ -16,16 +16,17 @@ classifiers = [
 keywords = ["fastapi", "websockets", "rpc", "json", "bidirectional"]
 
 [tool.poetry.dependencies]
-python = ">=3.7"
-fastapi = ">=0.78.0,<1"
-packaging = ">=20.4"
-pydantic = ">=1.9.1"
-uvicorn = ">=0.17.6,<1"
-websockets = ">=10.3,<11"
-tenacity = ">=8.0.1,<9"
+python = ">=3.9"
+fastapi = "^0.115.12"
+packaging = "^24.2"
+pydantic = "^2.11.3"
+uvicorn = "^0.34.1"
+websockets = "^15.0.1"
+tenacity = "^9.1.2"
 
-[tool.poetry.dev-dependencies]
-pytest = "^7.0"  # Add any development dependencies here
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.5"
+pytest-asyncio = "^0.26.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
