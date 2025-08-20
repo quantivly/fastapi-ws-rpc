@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from .logger import get_logger
 from .rpc_methods import EXPOSED_BUILT_IN_METHODS, NoResponse, RpcMethodsBase
-from .schemas import RpcMessage, RpcRequest, RpcResponse
+from .schemas import JsonRpcError, JsonRpcRequest, JsonRpcResponse
 from .utils import gen_uid, pydantic_parse
 
 logger = get_logger("RPC_CHANNEL")
@@ -46,9 +46,9 @@ class RpcPromise:
     Holds the state of a pending request
     """
 
-    def __init__(self, request: RpcRequest):
+    def __init__(self, request: JsonRpcRequest):
         self._request = request
-        self._id = request.call_id
+        self._id = request.id
         # event used to wait for the completion of the request
         # (upon receiving its matching response)
         self._event = asyncio.Event()
@@ -263,57 +263,39 @@ class RpcChannel:
         return await self._closed.wait()
 
     async def on_message(self, data):
-        """Handle an incoming RPC message."""
+        """Handle an incoming JSON-RPC 2.0 message."""
         logger.debug(f"Processing received message: {data}")
         try:
-            # Try to parse as JSON-RPC 2.0 format first
             from .schemas import JsonRpcRequest, JsonRpcResponse
 
-            if isinstance(data, dict):
-                # Check if it's a JSON-RPC 2.0 request
-                if "method" in data and "jsonrpc" in data:
-                    request = pydantic_parse(JsonRpcRequest, data)
-                    # Convert to legacy format for backward compatibility
-                    legacy_request = RpcRequest(
-                        method=request.method,
-                        arguments=request.params
-                        if isinstance(request.params, dict)
-                        else {"params": request.params}
-                        if request.params
-                        else {},
-                        call_id=request.id,
-                    )
-                    await self.on_request(legacy_request)
-                    return
+            if not isinstance(data, dict):
+                raise ValueError(f"Expected dict, got {type(data)}")
 
-                # Check if it's a JSON-RPC 2.0 response
-                if ("result" in data or "error" in data) and "jsonrpc" in data:
-                    response = pydantic_parse(JsonRpcResponse, data)
-                    # Convert to legacy format for backward compatibility
-                    if response.error:
-                        # Handle error response
-                        logger.error(f"Received RPC error: {response.error}")
-                        return
+            # Check if it's a JSON-RPC 2.0 request
+            if "method" in data:
+                if data.get("jsonrpc") != "2.0":
+                    raise ValueError(f"Invalid JSON-RPC version: {data.get('jsonrpc')}")
 
-                    legacy_response = RpcResponse[type(response.result)](
-                        result=response.result,
-                        result_type=type(response.result).__name__
-                        if response.result is not None
-                        else None,
-                        call_id=response.id,
-                    )
-                    await self.on_response(legacy_response)
-                    return
+                request = pydantic_parse(JsonRpcRequest, data)
+                await self.on_json_rpc_request(request)
+                return
 
-            # Fallback to legacy format
-            message = pydantic_parse(RpcMessage, data)
-            if message.request is not None:
-                await self.on_request(message.request)
-            if message.response is not None:
-                await self.on_response(message.response)
+            # Check if it's a JSON-RPC 2.0 response
+            if "result" in data or "error" in data:
+                if data.get("jsonrpc") != "2.0":
+                    raise ValueError(f"Invalid JSON-RPC version: {data.get('jsonrpc')}")
+
+                response = pydantic_parse(JsonRpcResponse, data)
+                await self.on_json_rpc_response(response)
+                return
+
+            # Unknown message format
+            raise ValueError(f"Unknown message format: {data}")
 
         except ValidationError as e:
-            logger.error("Failed to parse message", {"message": data, "error": e})
+            logger.error(
+                "Failed to parse JSON-RPC message", {"message": data, "error": e}
+            )
             await self.on_error(e)
         except Exception as e:
             await self.on_error(e)
@@ -394,39 +376,64 @@ class RpcChannel:
     async def on_error(self, error: Exception):
         await self.on_handler_event(self._error_handlers, self, error)
 
-    async def on_request(self, message: RpcRequest):
+    async def on_json_rpc_request(self, request: JsonRpcRequest):
         """
-        Handle incoming RPC requests - calling relevant exposed method
+        Handle incoming JSON-RPC 2.0 requests - calling relevant exposed method
         Note: methods prefixed with "_" are protected and ignored.
 
         Args:
-            message (RpcRequest): the RPC request with the method to call
+            request (JsonRpcRequest): the JSON-RPC 2.0 request with the method to call
         """
-        # TODO add exception support (catch exceptions and pass to other side
-        # as response with errors)
-        logger.debug(f"Handling RPC request on channel {self.id}: {message}")
-        method_name = message.method
+        logger.debug(f"Handling RPC request on channel {self.id}: {request}")
+        method_name = request.method
         # Ignore "_" prefixed methods (except the built in "_ping_")
         if isinstance(method_name, str) and (
             not method_name.startswith("_") or method_name in EXPOSED_BUILT_IN_METHODS
         ):
             method = getattr(self.methods, method_name)
             if callable(method):
-                result = await method(**message.arguments)
-                if result is not NoResponse:
-                    # get indicated type
-                    result_type = self.get_return_type(method)
-                    # if no type given - try to convert to string
-                    if result_type is str and not isinstance(result, str):
-                        result = str(result)
-                    # Send JSON-RPC 2.0 response
-                    from .schemas import JsonRpcResponse
+                try:
+                    # Convert params to arguments dict
+                    if isinstance(request.params, dict):
+                        arguments = request.params
+                    elif isinstance(request.params, list):
+                        # For positional parameters, create a params dict
+                        arguments = {"params": request.params}
+                    else:
+                        arguments = (
+                            {} if request.params is None else {"params": request.params}
+                        )
 
-                    response = JsonRpcResponse(
-                        id=message.call_id,
-                        result=result,
-                    )
-                    await self.send_raw(response.model_dump(exclude_none=True))
+                    result = await method(**arguments)
+                    if result is not NoResponse:
+                        # get indicated type
+                        result_type = self.get_return_type(method)
+                        # if no type given - try to convert to string
+                        if result_type is str and not isinstance(result, str):
+                            result = str(result)
+
+                        # Send JSON-RPC 2.0 response (only if not a notification)
+                        if request.id is not None:
+                            response = JsonRpcResponse(
+                                jsonrpc="2.0",
+                                id=request.id,
+                                result=result,
+                            )
+                            await self.send_raw(response.model_dump(exclude_none=True))
+
+                except Exception as exc:
+                    logger.exception(f"Failed to handle RPC request: {exc}")
+                    # Send JSON-RPC 2.0 error response (only if not a notification)
+                    if request.id is not None:
+                        error = JsonRpcError(
+                            code=-32603,  # Internal error
+                            message=str(exc),
+                            data={"type": type(exc).__name__},
+                        )
+                        response = JsonRpcResponse(
+                            jsonrpc="2.0", id=request.id, error=error
+                        )
+                        await self.send_raw(response.model_dump(exclude_none=True))
 
     def get_saved_promise(self, call_id):
         return self.requests[call_id]
@@ -438,20 +445,22 @@ class RpcChannel:
         del self.requests[call_id]
         del self.responses[call_id]
 
-    async def on_response(self, response: RpcResponse):
+    async def on_json_rpc_response(self, response: JsonRpcResponse):
         """
-        Handle an incoming response to a previous RPC call
+        Handle an incoming JSON-RPC 2.0 response to a previous RPC call
 
         Args:
-            response (RpcResponse): the received response
+            response (JsonRpcResponse): the received JSON-RPC 2.0 response
         """
         logger.debug("Handling RPC response - %s", {"response": response})
-        if response.call_id is not None and response.call_id in self.requests:
-            self.responses[response.call_id] = response
-            promise = self.requests[response.call_id]
+        if response.id is not None and response.id in self.requests:
+            self.responses[response.id] = response
+            promise = self.requests[response.id]
             promise.set()
 
-    async def wait_for_response(self, promise, timeout=DEFAULT_TIMEOUT) -> RpcResponse:
+    async def wait_for_response(
+        self, promise, timeout=DEFAULT_TIMEOUT
+    ) -> JsonRpcResponse:
         """
         Wait on a previously made call
         Args:
@@ -515,9 +524,8 @@ class RpcChannel:
         logger.debug("Sending JSON-RPC 2.0 request: %s", json_rpc_request)
         await self.send_raw(json_rpc_request.model_dump(exclude_none=True))
 
-        # Keep legacy request object for promise tracking
-        legacy_request = RpcRequest(method=name, arguments=args, call_id=call_id)
-        promise = self.requests[call_id] = RpcPromise(legacy_request)
+        # Create promise for response tracking
+        promise = self.requests[call_id] = RpcPromise(json_rpc_request)
         return promise
 
     async def call(self, name, args={}, timeout=DEFAULT_TIMEOUT):
