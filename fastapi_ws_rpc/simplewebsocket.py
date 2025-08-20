@@ -143,19 +143,6 @@ class JsonSerializingWebSocket(SimpleWebSocket):
         deserialized = self._deserialize(message)
         logger.debug(f"Deserialized message: {deserialized}")
 
-        # Track request messages for potential future use
-        if (
-            isinstance(deserialized, dict)
-            and "request" in deserialized
-            and isinstance(deserialized.get("request"), dict)
-        ):
-            method_name = deserialized["request"].get("method")
-            call_id = deserialized["request"].get("call_id")
-            if method_name and call_id:
-                self.messages["request_messages"][method_name] = call_id
-        else:
-            self.messages["ack_messages"] = deserialized
-
         return deserialized
 
     async def receive_text(self) -> Optional[dict]:

@@ -504,12 +504,20 @@ class RpcChannel:
             override only with true UUIDs
         """
         call_id = call_id or gen_uid()
-        message = RpcMessage(
-            request=RpcRequest(method=name, arguments=args, call_id=call_id)
+
+        # Create JSON-RPC 2.0 request directly
+        from .schemas import JsonRpcRequest
+
+        json_rpc_request = JsonRpcRequest(
+            id=call_id, method=name, params=args if args else None
         )
-        logger.debug("Sending the following RPC message: %s", message)
-        await self.send(message)
-        promise = self.requests[message.request.call_id] = RpcPromise(message.request)
+
+        logger.debug("Sending JSON-RPC 2.0 request: %s", json_rpc_request)
+        await self.send_raw(json_rpc_request.model_dump(exclude_none=True))
+
+        # Keep legacy request object for promise tracking
+        legacy_request = RpcRequest(method=name, arguments=args, call_id=call_id)
+        promise = self.requests[call_id] = RpcPromise(legacy_request)
         return promise
 
     async def call(self, name, args={}, timeout=DEFAULT_TIMEOUT):
