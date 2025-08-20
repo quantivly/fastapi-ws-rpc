@@ -235,6 +235,12 @@ class RpcChannel:
         """
         await self.socket.send(data)
 
+    async def send_raw(self, data):
+        """
+        Send raw dictionary data as JSON
+        """
+        await self.socket.send(data)
+
     async def receive(self):
         """
         For internal use. wrap calls to underlying socket
@@ -260,11 +266,52 @@ class RpcChannel:
         """Handle an incoming RPC message."""
         logger.debug(f"Processing received message: {data}")
         try:
+            # Try to parse as JSON-RPC 2.0 format first
+            from .schemas import JsonRpcRequest, JsonRpcResponse
+
+            if isinstance(data, dict):
+                # Check if it's a JSON-RPC 2.0 request
+                if "method" in data and "jsonrpc" in data:
+                    request = pydantic_parse(JsonRpcRequest, data)
+                    # Convert to legacy format for backward compatibility
+                    legacy_request = RpcRequest(
+                        method=request.method,
+                        arguments=request.params
+                        if isinstance(request.params, dict)
+                        else {"params": request.params}
+                        if request.params
+                        else {},
+                        call_id=request.id,
+                    )
+                    await self.on_request(legacy_request)
+                    return
+
+                # Check if it's a JSON-RPC 2.0 response
+                if ("result" in data or "error" in data) and "jsonrpc" in data:
+                    response = pydantic_parse(JsonRpcResponse, data)
+                    # Convert to legacy format for backward compatibility
+                    if response.error:
+                        # Handle error response
+                        logger.error(f"Received RPC error: {response.error}")
+                        return
+
+                    legacy_response = RpcResponse[type(response.result)](
+                        result=response.result,
+                        result_type=type(response.result).__name__
+                        if response.result is not None
+                        else None,
+                        call_id=response.id,
+                    )
+                    await self.on_response(legacy_response)
+                    return
+
+            # Fallback to legacy format
             message = pydantic_parse(RpcMessage, data)
             if message.request is not None:
                 await self.on_request(message.request)
             if message.response is not None:
                 await self.on_response(message.response)
+
         except ValidationError as e:
             logger.error("Failed to parse message", {"message": data, "error": e})
             await self.on_error(e)
@@ -372,23 +419,14 @@ class RpcChannel:
                     # if no type given - try to convert to string
                     if result_type is str and not isinstance(result, str):
                         result = str(result)
-                    response = RpcMessage(
-                        request=RpcRequest(
-                            method=method_name,
-                            arguments=message.arguments,
-                            call_id=message.call_id,
-                        ),
-                        response=RpcResponse[result_type](
-                            call_id=message.call_id,
-                            result=result,
-                            result_type=getattr(
-                                result_type,
-                                "__name__",
-                                getattr(result_type, "_name", "unknown-type"),
-                            ),
-                        ),
+                    # Send JSON-RPC 2.0 response
+                    from .schemas import JsonRpcResponse
+
+                    response = JsonRpcResponse(
+                        id=message.call_id,
+                        result=result,
                     )
-                    await self.send(response)
+                    await self.send_raw(response.model_dump(exclude_none=True))
 
     def get_saved_promise(self, call_id):
         return self.requests[call_id]

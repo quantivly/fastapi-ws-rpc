@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Dict, Generic, Optional, TypeVar
+from typing import Any, Dict, Generic, List, Optional, TypeVar, Union
 
 from pydantic import BaseModel
 
@@ -8,13 +8,41 @@ from .utils import is_pydantic_pre_v2
 UUID = str
 
 
+class JsonRpcRequest(BaseModel):
+    """JSON-RPC 2.0 request format"""
+
+    jsonrpc: str = "2.0"
+    id: Optional[Union[str, int]] = None
+    method: str
+    params: Optional[Union[Dict[str, Any], List[Any]]] = None
+
+
+class JsonRpcError(BaseModel):
+    """JSON-RPC 2.0 error format"""
+
+    code: int
+    message: str
+    data: Optional[Any] = None
+
+
+class JsonRpcResponse(BaseModel):
+    """JSON-RPC 2.0 response format"""
+
+    jsonrpc: str = "2.0"
+    id: Optional[Union[str, int]] = None
+    result: Optional[Any] = None
+    error: Optional[JsonRpcError] = None
+    compressed: Optional[bool] = None  # Extension for compression
+
+
+ResponseT = TypeVar("ResponseT")
+
+
+# Backward compatibility classes
 class RpcRequest(BaseModel):
     method: str
     arguments: Optional[Dict] = {}
     call_id: Optional[UUID] = None
-
-
-ResponseT = TypeVar("ResponseT")
 
 
 # Check pydantic version to handle deprecated GenericModel
