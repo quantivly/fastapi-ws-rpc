@@ -102,6 +102,8 @@ class JsonSerializingWebSocket(SimpleWebSocket):
         Returns:
             str: The serialized message.
         """
+        if isinstance(message, dict):
+            return json.dumps(message)
         return pydantic_serialize(message)
 
     def _deserialize(self, buffer: Union[str, bytes]) -> Any:
