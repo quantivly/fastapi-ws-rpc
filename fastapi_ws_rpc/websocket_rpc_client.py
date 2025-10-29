@@ -413,10 +413,10 @@ class WebSocketRpcClient:
         Send a ping request to the server and wait for a response.
 
         Returns:
-            The response object from the server's _ping_ method.
+            The response object from the server's ping method.
         """
         logger.debug("Pinging server...")
-        answer = await self.channel.other._ping_()
+        answer = await self.channel.other.ping()
         logger.debug(f"Got ping response: {answer}")
         return answer
 

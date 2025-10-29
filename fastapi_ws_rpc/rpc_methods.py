@@ -10,7 +10,7 @@ from .utils import gen_uid
 
 PING_RESPONSE = "pong"
 # list of internal methods that can be called from remote
-EXPOSED_BUILT_IN_METHODS = ["_ping_", "_get_channel_id_"]
+EXPOSED_BUILT_IN_METHODS = ["ping", "_get_channel_id_"]
 # NULL default value - indicating no response was received
 
 
@@ -23,7 +23,7 @@ class RpcMethodsBase:
     The basic interface RPC channels expects method groups to implement.
      - create copy of the method object
      - set channel
-     - provide '_ping_' for keep-alive
+     - provide 'ping' for keep-alive
     """
 
     def __init__(self):
@@ -44,9 +44,9 @@ class RpcMethodsBase:
         """Simple copy ctor - overriding classes may need to override copy as well."""
         return copy.copy(self)
 
-    async def _ping_(self) -> str:
+    async def ping(self) -> str:
         """
-        built in ping for keep-alive
+        Built-in ping for connection verification and keep-alive.
         """
         return PING_RESPONSE
 
