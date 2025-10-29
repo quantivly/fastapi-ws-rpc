@@ -386,7 +386,7 @@ class RpcChannel:
         """
         logger.debug(f"Handling RPC request on channel {self.id}: {request}")
         method_name = request.method
-        # Ignore "_" prefixed methods (except the built in "_ping_")
+        # Ignore "_" prefixed methods (except built-in methods like "ping")
         if isinstance(method_name, str) and (
             not method_name.startswith("_") or method_name in EXPOSED_BUILT_IN_METHODS
         ):
