@@ -134,6 +134,7 @@ class WebSocketRpcClient:
         self.channel = None
         self._read_task = None
         self._keep_alive_task = None
+        self._connection_closed = asyncio.Event()
 
         # Configuration
         self._keep_alive_interval = keep_alive
@@ -296,6 +297,9 @@ class WebSocketRpcClient:
         """
         logger.info("Closing RPC client...")
 
+        # Signal that connection is closed
+        self._connection_closed.set()
+
         # Close underlying connection
         if self.ws is not None:
             with suppress(RuntimeError, ConnectionClosed, WebSocketException):
@@ -346,13 +350,16 @@ class WebSocketRpcClient:
 
         except asyncio.CancelledError:
             logger.info("RPC read task was cancelled.")
+            self._connection_closed.set()
 
         except ConnectionClosed:
             logger.info("Connection was terminated.")
+            self._connection_closed.set()
             await self.close()
 
         except Exception:
             logger.exception("RPC reader task failed.")
+            self._connection_closed.set()
             raise
 
     async def _keep_alive(self) -> None:
@@ -505,3 +512,19 @@ class WebSocketRpcClient:
             and self._read_task is not None
             and not self._read_task.done()
         )
+
+    @property
+    def is_closed_event(self) -> asyncio.Event:
+        """
+        Event that is set when the connection is closed.
+
+        This event is set when:
+        - The reader task detects a ConnectionClosed exception
+        - The reader task is cancelled
+        - The close() method is called
+        - Any exception occurs in the reader task
+
+        Returns:
+            asyncio.Event: Event that will be set when the connection closes.
+        """
+        return self._connection_closed
