@@ -5,7 +5,7 @@ enabling bi-directional request/response interactions
 
 import asyncio
 from inspect import _empty, signature
-from typing import Any, Dict, List
+from typing import Any, Optional
 
 from pydantic import ValidationError
 
@@ -178,7 +178,7 @@ class RpcChannel:
         # a response for me calling you)
         self.methods._set_channel_(self)
         # Pending requests - id-mapped to async-event
-        self.requests: Dict[str, asyncio.Event] = {}
+        self.requests: dict[str, asyncio.Event] = {}
         # Received responses
         self.responses = {}
         self.socket = socket
@@ -197,8 +197,8 @@ class RpcChannel:
         # TODO - pass remote methods object to support validation before call
         self.other = RpcCaller(self)
         # core event callback registers
-        self._connect_handlers: List[OnConnectCallback] = []
-        self._disconnect_handlers: List[OnDisconnectCallback] = []
+        self._connect_handlers: list[OnConnectCallback] = []
+        self._disconnect_handlers: list[OnDisconnectCallback] = []
         self._error_handlers = []
         # internal event
         self._closed = asyncio.Event()
@@ -208,7 +208,7 @@ class RpcChannel:
         logger.debug("RPC channel initialized.")
 
     @property
-    def context(self) -> Dict[str, Any]:
+    def context(self) -> dict[str, Any]:
         return self._context
 
     async def get_other_channel_id(self) -> str:
@@ -302,7 +302,7 @@ class RpcChannel:
             await self.on_error(e)
             raise
 
-    def register_connect_handler(self, coros: List[OnConnectCallback] = None):
+    def register_connect_handler(self, coros: Optional[list[OnConnectCallback]] = None):
         """
         Register a connection handler callback that will be called (As an async
         task)) with the channel
@@ -312,7 +312,9 @@ class RpcChannel:
         if coros is not None:
             self._connect_handlers.extend(coros)
 
-    def register_disconnect_handler(self, coros: List[OnDisconnectCallback] = None):
+    def register_disconnect_handler(
+        self, coros: Optional[list[OnDisconnectCallback]] = None
+    ):
         """
         Register a disconnect handler callback that will be called (As an async
         task)) with the channel id
@@ -322,7 +324,7 @@ class RpcChannel:
         if coros is not None:
             self._disconnect_handlers.extend(coros)
 
-    def register_error_handler(self, coros: List[OnErrorCallback] = None):
+    def register_error_handler(self, coros: Optional[list[OnErrorCallback]] = None):
         """
         Register an error handler callback that will be called (As an async
         task)) with the channel and triggered error.
@@ -496,12 +498,12 @@ class RpcChannel:
         # if the channel was closed before we could finish
         if response is NoResponse:
             raise RpcChannelClosedException(
-                f"Channel Closed before RPC response for {promise.call_id} could be received"  # noqa: E501
+                f"Channel Closed before RPC response for {promise.call_id} could be received"
             )
         self.clear_saved_call(promise.call_id)
         return response
 
-    async def async_call(self, name, args={}, call_id=None) -> RpcPromise:
+    async def async_call(self, name, args=None, call_id=None) -> RpcPromise:
         """
         Call a method and return the event and the sent message (including the
         chosen call_id)
@@ -513,6 +515,8 @@ class RpcChannel:
             call_id (string, optional): a UUID to use to track the call () -
             override only with true UUIDs
         """
+        if args is None:
+            args = {}
         call_id = call_id or gen_uid()
 
         # Create JSON-RPC 2.0 request directly
@@ -529,9 +533,11 @@ class RpcChannel:
         promise = self.requests[call_id] = RpcPromise(json_rpc_request)
         return promise
 
-    async def call(self, name, args={}, timeout=DEFAULT_TIMEOUT):
+    async def call(self, name, args=None, timeout=DEFAULT_TIMEOUT):
         """
         Call a method and wait for a response to be received
         """
+        if args is None:
+            args = {}
         promise = await self.async_call(name, args)
         return await self.wait_for_response(promise, timeout=timeout)

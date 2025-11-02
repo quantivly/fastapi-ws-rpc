@@ -49,6 +49,50 @@ explicit_package_bases = true
 module = "tests.*"
 disallow_untyped_defs = false
 
+[tool.ruff]
+target-version = "py39"
+line-length = 88
+exclude = [
+    ".git",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "PTH",    # flake8-use-pathlib
+    "RUF",    # Ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long (handled by black)
+    "N801",   # Class name should use CapWords (DEFAULT_TIMEOUT sentinel class)
+    "N802",   # Function name should be lowercase (API breaking change)
+    "N818",   # Exception name should end with Error (API breaking change)
+    "PTH109", # os.getcwd() -> Path.cwd() (not critical, can fix later)
+    "RUF006", # Store asyncio.create_task reference (fire-and-forget tasks)
+    "RUF012", # Mutable class attributes with ClassVar (not critical, can fix later)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["N802", "N803"]  # Allow lowercase function names in tests
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"

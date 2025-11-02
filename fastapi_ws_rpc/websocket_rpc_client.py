@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any
 
 import tenacity
 import websockets
@@ -87,13 +87,13 @@ class WebSocketRpcClient:
     def __init__(
         self,
         uri: str,
-        methods: Optional[RpcMethodsBase] = None,
-        retry_config: Optional[Union[Dict, bool]] = None,
-        default_response_timeout: Optional[float] = None,
-        on_connect: Optional[List[OnConnectCallback]] = None,
-        on_disconnect: Optional[List[OnDisconnectCallback]] = None,
+        methods: RpcMethodsBase | None = None,
+        retry_config: dict | bool | None = None,
+        default_response_timeout: float | None = None,
+        on_connect: list[OnConnectCallback] | None = None,
+        on_disconnect: list[OnDisconnectCallback] | None = None,
         keep_alive: float = 0,
-        serializing_socket_cls: Type[SimpleWebSocket] = JsonSerializingWebSocket,
+        serializing_socket_cls: type[SimpleWebSocket] = JsonSerializingWebSocket,
         **kwargs,
     ):
         """
@@ -182,7 +182,7 @@ class WebSocketRpcClient:
 
                 # Create WebSocket connection
                 logger.debug(
-                    f"Creating WebSocket connection to {self.uri} with parameters: {self.connect_kwargs}"  # noqa: E501
+                    f"Creating WebSocket connection to {self.uri} with parameters: {self.connect_kwargs}"
                 )
                 raw_ws = await websockets.connect(self.uri, **self.connect_kwargs)
 
@@ -251,16 +251,12 @@ class WebSocketRpcClient:
         Clean up resources after a failed connection attempt.
         """
         if self.ws is not None:
-            try:
+            with suppress(Exception):
                 await self.ws.close()
-            except Exception:
-                pass
 
         if self.channel is not None:
-            try:
+            with suppress(Exception):
                 await self.channel.close()
-            except Exception:
-                pass
 
         self.cancel_tasks()
 
@@ -401,7 +397,7 @@ class WebSocketRpcClient:
         ):
             try:
                 logger.debug(
-                    f"RPC ready check attempt {attempt_count + 1}/{self.MAX_CONNECTION_ATTEMPTS}"  # noqa: E501
+                    f"RPC ready check attempt {attempt_count + 1}/{self.MAX_CONNECTION_ATTEMPTS}"
                 )
                 received_response = await asyncio.wait_for(
                     self.ping(), self.WAIT_FOR_INITIAL_CONNECTION
@@ -462,7 +458,7 @@ class WebSocketRpcClient:
                 logger.info("RPC Reader task was cancelled.")
 
     async def call(
-        self, name: str, args: Optional[Dict] = None, timeout: Optional[float] = None
+        self, name: str, args: dict | None = None, timeout: float | None = None
     ):
         """
         Call a remote method on the server and wait for the response.

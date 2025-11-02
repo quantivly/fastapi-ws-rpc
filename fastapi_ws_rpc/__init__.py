@@ -5,7 +5,7 @@ from fastapi_ws_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
 
 __all__ = [
     "RpcMethodsBase",
+    "WebSocketFrameType",
     "WebSocketRpcClient",
     "WebsocketRPCEndpoint",
-    "WebSocketFrameType",
 ]

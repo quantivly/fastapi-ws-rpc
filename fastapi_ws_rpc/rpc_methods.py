@@ -59,7 +59,7 @@ class RpcMethodsBase:
 
 class ProcessDetails(BaseModel):
     pid: int = os.getpid()
-    cmd: typing.List[str] = sys.argv
+    cmd: list[str] = sys.argv
     workingdir: str = os.getcwd()
 
 
@@ -77,7 +77,9 @@ class RpcUtilityMethods(RpcMethodsBase):
     async def get_process_details(self) -> ProcessDetails:
         return ProcessDetails()
 
-    async def call_me_back(self, method_name="", args={}) -> str:
+    async def call_me_back(self, method_name="", args=None) -> str:
+        if args is None:
+            args = {}
         if self.channel is not None:
             # generate a uid we can use to track this request
             call_id = gen_uid()

@@ -83,9 +83,7 @@ class LoggingConfig:
             logging_config["loggers"] = self.UVICORN_LOGGERS.copy()
             logging_config["loggers"]["fastapi_ws_rpc"]["level"] = level
             dictConfig(logging_config)
-        elif mode == LoggingModes.SIMPLE:
-            pass
-        elif mode == LoggingModes.LOGURU:
+        elif mode == LoggingModes.SIMPLE or mode == LoggingModes.LOGURU:
             pass
         # no logs
         else:

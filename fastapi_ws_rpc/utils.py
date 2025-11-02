@@ -13,7 +13,7 @@ from .logger import get_logger
 logger = get_logger("fastapi_ws_rpc.utils")
 
 
-class RandomUtils(object):
+class RandomUtils:
     @staticmethod
     def gen_cookie_id():
         return os.urandom(16).hex()
@@ -56,7 +56,7 @@ gen_uid = RandomUtils.gen_uid
 gen_token = RandomUtils.gen_token
 
 
-class StringUtils(object):
+class StringUtils:
     @staticmethod
     def convert_camelcase_to_underscore(name, lower=True):
         s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)

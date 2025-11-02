@@ -1,5 +1,6 @@
 import asyncio
-from typing import Coroutine, List, Type
+from collections.abc import Coroutine
+from typing import Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -53,10 +54,10 @@ class WebsocketRPCEndpoint:
         self,
         methods: RpcMethodsBase = None,
         manager: ConnectionManager = None,
-        on_disconnect: List[Coroutine] = None,
-        on_connect: List[Coroutine] = None,
+        on_disconnect: Optional[list[Coroutine]] = None,
+        on_connect: Optional[list[Coroutine]] = None,
         frame_type: WebSocketFrameType = WebSocketFrameType.Text,
-        serializing_socket_cls: Type[SimpleWebSocket] = JsonSerializingWebSocket,
+        serializing_socket_cls: type[SimpleWebSocket] = JsonSerializingWebSocket,
         rpc_channel_get_remote_id: bool = False,
     ):
         """[summary]
@@ -78,7 +79,9 @@ class WebsocketRPCEndpoint:
         self._serializing_socket_cls = serializing_socket_cls
         self._rpc_channel_get_remote_id = rpc_channel_get_remote_id
 
-    async def main_loop(self, websocket: WebSocket, client_id: str = None, **kwargs):
+    async def main_loop(
+        self, websocket: WebSocket, client_id: Optional[str] = None, **kwargs
+    ):
         try:
             await self.manager.connect(websocket)
             logger.info("Client connected", {"remote_address": websocket.client})
@@ -102,14 +105,14 @@ class WebsocketRPCEndpoint:
                     await channel.on_message(data)
             except WebSocketDisconnect:
                 logger.info(
-                    f"Client disconnected - {websocket.client.port} :: {channel.id}"  # noqa: E501
+                    f"Client disconnected - {websocket.client.port} :: {channel.id}"
                 )
                 await self.handle_disconnect(websocket, channel)
             except Exception:
                 # cover cases like - RuntimeError('Cannot call "send" once a close
                 # message has been sent.')
                 logger.info(
-                    f"Client connection failed - {websocket.client.port} :: {channel.id}"  # noqa: E501
+                    f"Client connection failed - {websocket.client.port} :: {channel.id}"
                 )
                 await self.handle_disconnect(websocket, channel)
         except Exception:

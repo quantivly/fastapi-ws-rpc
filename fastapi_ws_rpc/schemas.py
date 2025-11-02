@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Dict, List, Optional, TypeVar, Union
+from typing import Any, Optional, TypeVar, Union
 
 from pydantic import BaseModel
 
@@ -12,7 +12,7 @@ class JsonRpcRequest(BaseModel):
     jsonrpc: str = "2.0"
     id: Optional[Union[str, int]] = None
     method: str
-    params: Optional[Union[Dict[str, Any], List[Any]]] = None
+    params: Optional[Union[dict[str, Any], list[Any]]] = None
 
 
 class JsonRpcError(BaseModel):
