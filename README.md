@@ -161,5 +161,27 @@ from fastapi_ws_rpc.logger import logging_config, LoggingModes
 logging_config.set_mode(LoggingModes.UVICORN)
 ```
 
-## Pull requests - welcome!
+## Development
+
+### Contributing
+
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for:
+- Development setup instructions
+- Code style guidelines
+- Testing requirements
+- Pull request process
+
+### Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
+
+**Note**: The upcoming release includes breaking changes:
+- Minimum Python version raised to 3.9+
+- Removed `requirements.txt` in favor of `pyproject.toml`
+- See CHANGELOG for full details
+
+## Pull Requests Welcome! 🎉
+
 - Please include tests for new features
+- Follow the code style guidelines in [CONTRIBUTING.md](CONTRIBUTING.md)
+- Update documentation as needed
