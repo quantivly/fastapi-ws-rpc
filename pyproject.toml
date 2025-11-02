@@ -28,6 +28,7 @@ tenacity = "^9.1.2"
 pytest = "^8.3.5"
 pytest-asyncio = "^0.26.0"
 mypy = "^1.18.2"
+pytest-cov = "^7.0.0"
 
 [tool.mypy]
 python_version = "3.9"
@@ -92,6 +93,41 @@ ignore = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = [
+    "--cov=fastapi_ws_rpc",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml",
+    "--cov-fail-under=0",  # Start at 0, increase as coverage improves
+]
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+source = ["fastapi_ws_rpc"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/venv/*",
+    "*/.venv/*",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
