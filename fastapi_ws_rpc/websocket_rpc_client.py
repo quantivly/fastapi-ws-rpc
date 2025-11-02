@@ -2,6 +2,7 @@
 WebSocketRpcClient module provides a client that connects to a WebsocketRPCEndpoint
 via websocket and enables bi-directional RPC calls.
 """
+
 from __future__ import annotations
 
 import asyncio

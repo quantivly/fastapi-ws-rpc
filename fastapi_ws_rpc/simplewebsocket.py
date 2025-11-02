@@ -1,6 +1,7 @@
 """
 Simple wrappers for websocket objects to provide a common interface.
 """
+
 import json
 from abc import ABC, abstractmethod
 from typing import Any, Optional, TypeVar, Union

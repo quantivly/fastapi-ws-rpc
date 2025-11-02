@@ -2,6 +2,7 @@
 Test for the classic design pattern -
 where a client registers on the server to receive future events
 """
+
 import asyncio
 import os
 from multiprocessing import Process
