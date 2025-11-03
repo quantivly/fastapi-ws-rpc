@@ -7,18 +7,22 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from inspect import _empty, signature
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from pydantic import ValidationError
-
+from ._internal.caller import RpcCaller
+from ._internal.method_invoker import RpcMethodInvoker
+from ._internal.promise_manager import RpcPromise, RpcPromiseManager
+from ._internal.protocol_handler import RpcProtocolHandler
+from .exceptions import RemoteValueError
 from .logger import get_logger
-from .rpc_methods import EXPOSED_BUILT_IN_METHODS, NoResponse, RpcMethodsBase
-from .schemas import JsonRpcError, JsonRpcRequest, JsonRpcResponse
-from .utils import gen_uid, pydantic_parse
+from .schemas import JsonRpcRequest, JsonRpcResponse
+from .utils import gen_uid
 
 if TYPE_CHECKING:
     from typing_extensions import TypeAlias
+
+    from .rpc_methods import RpcMethodsBase
 
 # Type aliases for callbacks (using string quotes for forward references)
 OnConnectCallback: TypeAlias = Callable[["RpcChannel"], Awaitable[None]]
@@ -30,112 +34,6 @@ logger = get_logger("RPC_CHANNEL")
 
 class DEFAULT_TIMEOUT:
     pass
-
-
-class RemoteValueError(ValueError):
-    pass
-
-
-class RpcError(Exception):
-    pass
-
-
-class RpcChannelClosedError(Exception):
-    """
-    Raised when the channel is closed mid-operation
-    """
-
-    pass
-
-
-class UnknownMethodError(RpcError):
-    pass
-
-
-class RpcPromise:
-    """
-    Simple Event and id wrapper/proxy
-    Holds the state of a pending request
-    """
-
-    def __init__(self, request: JsonRpcRequest) -> None:
-        self._request = request
-        self._id = request.id
-        # event used to wait for the completion of the request
-        # (upon receiving its matching response)
-        self._event = asyncio.Event()
-
-    @property
-    def request(self) -> JsonRpcRequest:
-        return self._request
-
-    @property
-    def call_id(self) -> str:
-        # JSON-RPC 2.0 spec: id can be string, number, or null, but we use string
-        return str(self._id) if self._id is not None else ""
-
-    def set(self) -> None:
-        """
-        Signal completion of request with received response
-        """
-        self._event.set()
-
-    def wait(self) -> Awaitable[bool]:
-        """
-        Wait on the internal event - triggered on response
-        """
-        return self._event.wait()
-
-
-class RpcProxy:
-    """Provides a proxy to a remote method on the other side of the channel."""
-
-    def __init__(self, channel: RpcChannel, method_name: str) -> None:
-        self.channel = channel
-        self.method_name = method_name
-
-    def __call__(self, **kwargs: Any) -> Awaitable[Any]:
-        """Calls the remote method with the given keyword arguments.
-
-        Parameters
-        ----------
-        kwargs : dict
-            Keyword arguments to pass to the remote method.
-
-        Returns
-        -------
-        Awaitable[Any]
-            Coroutine that resolves to the return value of the remote method.
-        """
-        logger.debug("Calling RPC method: %s", self.method_name)
-        return self.channel.call(self.method_name, args=kwargs)
-
-
-class RpcCaller:
-    """Calls remote methods on the other side of the channel."""
-
-    def __init__(self, channel: RpcChannel, methods: Any = None) -> None:
-        self._channel = channel
-
-    def __getattribute__(self, name: str) -> Any:
-        """Returns an :class:`~fastapi_ws_rpc.rpc_channel.RpcProxy` instance
-        for exposed RPC methods.
-
-        Parameters
-        ----------
-        name : str
-            Name of the requested attribute (or RPC method).
-
-        Returns
-        -------
-        Any
-            Attribute or RPC method proxy.
-        """
-        is_exposed = not name.startswith("_") or name in EXPOSED_BUILT_IN_METHODS
-        if is_exposed:
-            logger.debug("%s was detected to be a remote RPC method.", name)
-            return RpcProxy(self._channel, name)
-        return super().__getattribute__(name)
 
 
 class RpcChannel:
@@ -156,6 +54,8 @@ class RpcChannel:
         channel_id: str | None = None,
         default_response_timeout: float | None = None,
         sync_channel_id: bool = False,
+        max_pending_requests: int | None = None,
+        max_connection_duration: float | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -170,16 +70,30 @@ class RpcChannel:
             sync_channel_id(bool, optional) should get the other side of the
             channel id, helps to identify connections, cost a bit networking time.
                 Defaults to False - i.e. not getting the other side channel id
+            max_pending_requests (int, optional): Maximum number of pending RPC
+            requests before backpressure is applied. Defaults to 1000.
+            Prevents resource exhaustion from request flooding.
+            max_connection_duration (float, optional): Maximum time in seconds
+            that this channel can remain open. After this time, the connection
+            will be gracefully closed. None means no limit. Defaults to None.
         """
         logger.debug("Initializing RPC channel...")
         self.methods = methods._copy_()
         # allow methods to access channel (for recursive calls - e.g. call me as
         # a response for me calling you)
         self.methods._set_channel_(self)
-        # Pending requests - id-mapped to async-event
-        self.requests: dict[str, RpcPromise] = {}
-        # Received responses
-        self.responses: dict[str, JsonRpcResponse] = {}
+
+        # Initialize specialized components with backpressure control
+        self._promise_manager = RpcPromiseManager(
+            max_pending_requests=max_pending_requests
+        )
+        self._method_invoker = RpcMethodInvoker(self.methods)
+        self._protocol_handler = RpcProtocolHandler(
+            self._method_invoker,
+            self._promise_manager,
+            self.send_raw,
+        )
+
         self.socket = socket
         # timeout
         self.default_response_timeout = default_response_timeout
@@ -199,8 +113,17 @@ class RpcChannel:
         self._connect_handlers: list[OnConnectCallback] = []
         self._disconnect_handlers: list[OnDisconnectCallback] = []
         self._error_handlers: list[OnErrorCallback] = []
-        # internal event
-        self._closed = asyncio.Event()
+
+        # Connection duration tracking
+        self._max_connection_duration = max_connection_duration
+        self._connection_start_time = asyncio.get_event_loop().time()
+        self._duration_watchdog_task: asyncio.Task[None] | None = None
+
+        # Start duration watchdog if limit is set
+        if self._max_connection_duration is not None:
+            self._duration_watchdog_task = asyncio.create_task(
+                self._connection_duration_watchdog()
+            )
 
         # any other kwarg goes straight to channel context (Accessible to methods)
         self._context: dict[str, Any] = kwargs or {}
@@ -223,14 +146,6 @@ class RpcChannel:
             raise RemoteValueError("Other channel ID not available")
         return self._other_channel_id
 
-    def get_return_type(self, method: Any) -> Any:
-        method_signature = signature(method)
-        return (
-            method_signature.return_annotation
-            if method_signature.return_annotation is not _empty
-            else str
-        )
-
     async def send(self, data: Any) -> None:
         """
         For internal use. wrap calls to underlying socket
@@ -250,56 +165,53 @@ class RpcChannel:
         return await self.socket.recv()
 
     async def close(self) -> Any:
+        # Cancel duration watchdog if running
+        if self._duration_watchdog_task is not None:
+            self._duration_watchdog_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._duration_watchdog_task
+            self._duration_watchdog_task = None
+
+        # Delegate cleanup to promise manager
+        self._promise_manager.close()
+
+        # Close the underlying socket
         res = await self.socket.close()
-        # signal closer
-        self._closed.set()
         return res
 
     def is_closed(self) -> bool:
-        return self._closed.is_set()
+        """
+        Check if the channel has been closed.
+
+        Returns:
+            True if closed, False otherwise
+        """
+        return self._promise_manager.is_closed()
 
     async def wait_until_closed(self) -> bool:
         """
-        Waits until the close internal event happens.
+        Wait until the channel is closed.
+
+        Returns:
+            True when the channel is closed
         """
-        return await self._closed.wait()
+        return await self._promise_manager.wait_until_closed()
 
     async def on_message(self, data: dict[str, Any]) -> None:
-        """Handle an incoming JSON-RPC 2.0 message."""
+        """
+        Handle an incoming JSON-RPC 2.0 message.
+
+        Delegates to the protocol handler for parsing and routing.
+
+        Args:
+            data: The received message data
+        """
         logger.debug(f"Processing received message: {data}")
         try:
-            from .schemas import JsonRpcRequest, JsonRpcResponse
-
-            if not isinstance(data, dict):
-                raise ValueError(f"Expected dict, got {type(data)}")
-
-            # Check if it's a JSON-RPC 2.0 request
-            if "method" in data:
-                if data.get("jsonrpc") != "2.0":
-                    raise ValueError(f"Invalid JSON-RPC version: {data.get('jsonrpc')}")
-
-                request = pydantic_parse(JsonRpcRequest, data)
-                await self.on_json_rpc_request(request)
-                return
-
-            # Check if it's a JSON-RPC 2.0 response
-            if "result" in data or "error" in data:
-                if data.get("jsonrpc") != "2.0":
-                    raise ValueError(f"Invalid JSON-RPC version: {data.get('jsonrpc')}")
-
-                response = pydantic_parse(JsonRpcResponse, data)
-                await self.on_json_rpc_response(response)
-                return
-
-            # Unknown message format
-            raise ValueError(f"Unknown message format: {data}")
-
-        except ValidationError as e:
-            logger.error(
-                "Failed to parse JSON-RPC message", {"message": data, "error": e}
-            )
-            await self.on_error(e)
+            await self._protocol_handler.handle_message(data)
         except Exception as e:
+            # Handle message processing errors
+            logger.error(f"Error processing RPC message: {type(e).__name__}: {e}")
             await self.on_error(e)
             raise
 
@@ -385,146 +297,44 @@ class RpcChannel:
 
     async def on_disconnect(self) -> None:
         # disconnect happened - mark the channel as closed
-        self._closed.set()
+        self._promise_manager.close()
         await self.on_handler_event(self._disconnect_handlers, self)
 
     async def on_error(self, error: Exception) -> None:
         await self.on_handler_event(self._error_handlers, self, error)
 
-    async def on_json_rpc_request(self, request: JsonRpcRequest) -> None:
+    def get_saved_promise(self, call_id: str) -> RpcPromise:
         """
-        Handle incoming JSON-RPC 2.0 requests - calling relevant exposed method
-        Note: methods prefixed with "_" are protected and ignored.
+        Retrieve a stored promise by call ID.
 
         Args:
-            request (JsonRpcRequest): the JSON-RPC 2.0 request with the method to call
+            call_id: The unique identifier for the RPC call
+
+        Returns:
+            The RpcPromise associated with the call ID
         """
-        logger.debug(f"Handling RPC request on channel {self.id}: {request}")
-        method_name = request.method
-        # Ignore "_" prefixed methods (except built-in methods like "ping")
-        if isinstance(method_name, str) and (
-            not method_name.startswith("_") or method_name in EXPOSED_BUILT_IN_METHODS
-        ):
-            method = getattr(self.methods, method_name)
-            if callable(method):
-                try:
-                    # Convert params to arguments dict
-                    if isinstance(request.params, dict):
-                        arguments = request.params
-                    elif isinstance(request.params, list):
-                        # For positional parameters, create a params dict
-                        arguments = {"params": request.params}
-                    else:
-                        arguments = (
-                            {} if request.params is None else {"params": request.params}
-                        )
-
-                    result = await method(**arguments)
-                    if result is not NoResponse:
-                        # get indicated type
-                        result_type = self.get_return_type(method)
-                        # if no type given - try to convert to string
-                        if result_type is str and not isinstance(result, str):
-                            result = str(result)
-
-                        # Send JSON-RPC 2.0 response (only if not a notification)
-                        if request.id is not None:
-                            response = JsonRpcResponse(
-                                jsonrpc="2.0",
-                                id=request.id,
-                                result=result,
-                            )
-                            await self.send_raw(response.model_dump(exclude_none=True))
-
-                except Exception as exc:
-                    logger.exception(f"Failed to handle RPC request: {exc}")
-                    # Send JSON-RPC 2.0 error response (only if not a notification)
-                    if request.id is not None:
-                        error = JsonRpcError(
-                            code=-32603,  # Internal error
-                            message=str(exc),
-                            data={"type": type(exc).__name__},
-                        )
-                        response = JsonRpcResponse(
-                            jsonrpc="2.0", id=request.id, error=error
-                        )
-                        await self.send_raw(response.model_dump(exclude_none=True))
-
-    def get_saved_promise(self, call_id: str) -> RpcPromise:
-        return self.requests[call_id]
+        return self._promise_manager.get_saved_promise(call_id)
 
     def get_saved_response(self, call_id: str) -> JsonRpcResponse:
-        return self.responses[call_id]
+        """
+        Retrieve a stored response by call ID.
+
+        Args:
+            call_id: The unique identifier for the RPC call
+
+        Returns:
+            The JsonRpcResponse associated with the call ID
+        """
+        return self._promise_manager.get_saved_response(call_id)
 
     def clear_saved_call(self, call_id: str) -> None:
-        del self.requests[call_id]
-        del self.responses[call_id]
-
-    async def on_json_rpc_response(self, response: JsonRpcResponse) -> None:
         """
-        Handle an incoming JSON-RPC 2.0 response to a previous RPC call
+        Clean up a completed call by removing its promise and response.
 
         Args:
-            response (JsonRpcResponse): the received JSON-RPC 2.0 response
+            call_id: The unique identifier for the RPC call to clean up
         """
-        logger.debug("Handling RPC response - %s", {"response": response})
-        if response.id is not None:
-            # Convert response.id to string for dict key lookup
-            response_id = str(response.id)
-            if response_id in self.requests:
-                self.responses[response_id] = response
-                promise = self.requests[response_id]
-                promise.set()
-
-    async def wait_for_response(
-        self,
-        promise: RpcPromise,
-        timeout: type[DEFAULT_TIMEOUT] | float | None = DEFAULT_TIMEOUT,
-    ) -> JsonRpcResponse:
-        """
-        Wait on a previously made call
-        Args:
-            promise (RpcPromise): the awaitable-wrapper returned from the RPC
-            request call
-            timeout (float, None, or DEFAULT_TIMEOUT): the timeout to wait on
-            the response, defaults to DEFAULT_TIMEOUT.
-                - DEFAULT_TIMEOUT - use the value passed as
-                'default_response_timeout' in channel init
-                - None - no timeout
-                - a number - seconds to wait before timing out
-        Raises:
-            asyncio.exceptions.TimeoutError - on timeout
-            RpcChannelClosedError - if the channel fails before wait could
-            be completed
-        """
-        actual_timeout: float | None
-        if timeout is DEFAULT_TIMEOUT:
-            actual_timeout = self.default_response_timeout
-        else:
-            actual_timeout = timeout  # type: ignore[assignment]
-
-        # wait for the promise or until the channel is terminated
-        _, pending = await asyncio.wait(
-            [
-                asyncio.ensure_future(promise.wait()),
-                asyncio.ensure_future(self._closed.wait()),
-            ],
-            timeout=actual_timeout,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        # Cancel all pending futures and then detect if close was the first done
-        for fut in pending:
-            fut.cancel()
-
-        call_id = promise.call_id
-        response = self.responses.get(call_id)
-        # if the channel was closed before we could finish
-        if response is None:
-            raise RpcChannelClosedError(
-                f"Channel Closed before RPC response for {call_id} could be received"
-            )
-        self.clear_saved_call(call_id)
-        return response
+        self._promise_manager.clear_saved_call(call_id)
 
     async def async_call(
         self,
@@ -533,32 +343,45 @@ class RpcChannel:
         call_id: str | None = None,
     ) -> RpcPromise:
         """
-        Call a method and return the event and the sent message (including the
-        chosen call_id)
-        use self.wait_for_response on the event and call_id to get the return
-        value of the call
+        Call a method and return a promise for tracking the response.
+
+        Use self.call() or wait_for_response() on the returned promise to get
+        the return value of the call.
+
         Args:
-            name (str): name of the method to call on the other side
-            args (dict): keyword args to pass tot he other side
-            call_id (string, optional): a UUID to use to track the call () -
-            override only with true UUIDs
+            name: Name of the method to call on the remote side
+            args: Keyword arguments to pass to the method
+            call_id: Optional UUID to track the call. If not provided, a new UUID
+                    is generated. WARNING: Using duplicate call_ids will cause
+                    request collision and undefined behavior.
+
+        Returns:
+            RpcPromise: A promise object that can be awaited for the response
+
+        Raises:
+            ValueError: If call_id is already in use (request ID collision)
+
+        Example:
+            ```python
+            promise = await channel.async_call("my_method", {"arg": "value"})
+            response = await channel.call(promise, timeout=5.0)
+            ```
         """
         if args is None:
             args = {}
         call_id = call_id or gen_uid()
 
-        # Create JSON-RPC 2.0 request directly
-        from .schemas import JsonRpcRequest
-
+        # Create JSON-RPC 2.0 request
         json_rpc_request = JsonRpcRequest(
             id=call_id, method=name, params=args if args else None
         )
 
+        # Create promise (includes collision detection)
+        promise = self._promise_manager.create_promise(json_rpc_request)
+
         logger.debug("Sending JSON-RPC 2.0 request: %s", json_rpc_request)
         await self.send_raw(json_rpc_request.model_dump(exclude_none=True))
 
-        # Create promise for response tracking
-        promise = self.requests[call_id] = RpcPromise(json_rpc_request)
         return promise
 
     async def call(
@@ -568,9 +391,124 @@ class RpcChannel:
         timeout: type[DEFAULT_TIMEOUT] | float | None = DEFAULT_TIMEOUT,
     ) -> JsonRpcResponse:
         """
-        Call a method and wait for a response to be received
+        Call a method and wait for a response to be received.
+
+        Args:
+            name: Name of the method to call on the remote side
+            args: Keyword arguments to pass to the method
+            timeout: Maximum time to wait for response (seconds).
+                    Can be DEFAULT_TIMEOUT (use channel default), a number
+                    (seconds), or None (no timeout).
+
+        Returns:
+            JsonRpcResponse: The response from the remote method
+
+        Raises:
+            RpcChannelClosedError: If channel is closed during the call
+            asyncio.TimeoutError: If the call times out
         """
         if args is None:
             args = {}
         promise = await self.async_call(name, args)
-        return await self.wait_for_response(promise, timeout=timeout)
+
+        # Convert DEFAULT_TIMEOUT to actual timeout value
+        actual_timeout: float | None
+        if timeout is DEFAULT_TIMEOUT:
+            actual_timeout = self.default_response_timeout
+        else:
+            actual_timeout = timeout  # type: ignore[assignment]
+
+        return await self._promise_manager.wait_for_response(promise, actual_timeout)
+
+    async def notify(self, name: str, args: dict[str, Any] | None = None) -> None:
+        """
+        Send a notification (one-way message with no response expected).
+
+        This sends a JSON-RPC 2.0 notification, which is a request without an id.
+        The remote side will execute the method but will not send back a response.
+        Use this for fire-and-forget messages where you don't need confirmation.
+
+        Args:
+            name: Name of the method to call on the remote side
+            args: Keyword arguments to pass to the method
+
+        Example:
+            ```python
+            # Send a notification to log something on the remote side
+            await channel.notify("log_event", {"level": "info", "message": "Hello"})
+            ```
+
+        Note:
+            - Notifications never receive responses, even if the method fails
+            - The remote side may silently drop notifications if the method doesn't exist
+            - For operations that need confirmation, use call() instead
+        """
+        if args is None:
+            args = {}
+
+        # Create JSON-RPC 2.0 notification (request with id=None)
+        from .schemas import JsonRpcRequest
+
+        notification = JsonRpcRequest(
+            id=None,  # Notifications have no id
+            method=name,
+            params=args if args else None,
+        )
+
+        logger.debug("Sending JSON-RPC 2.0 notification: %s", notification)
+        await self.send_raw(notification.model_dump(exclude_none=True))
+
+    def get_connection_age(self) -> float:
+        """
+        Get the age of the connection in seconds.
+
+        Returns:
+            Number of seconds since the channel was created
+        """
+        current_time = asyncio.get_event_loop().time()
+        return current_time - self._connection_start_time
+
+    def get_remaining_duration(self) -> float | None:
+        """
+        Get the remaining connection duration before automatic closure.
+
+        Returns:
+            Remaining seconds, or None if no duration limit is set
+        """
+        if self._max_connection_duration is None:
+            return None
+
+        age = self.get_connection_age()
+        remaining = self._max_connection_duration - age
+        return max(0.0, remaining)
+
+    async def _connection_duration_watchdog(self) -> None:
+        """
+        Background task that monitors connection duration.
+
+        When max_connection_duration is reached, this task will:
+        1. Log a warning
+        2. Trigger on_disconnect handlers
+        3. Close the channel gracefully
+        """
+        if self._max_connection_duration is None:
+            return
+
+        try:
+            await asyncio.sleep(self._max_connection_duration)
+
+            # Connection duration exceeded
+            logger.warning(
+                f"Channel {self.id} exceeded maximum connection duration "
+                f"({self._max_connection_duration}s). Closing gracefully."
+            )
+
+            # Trigger disconnect handlers
+            await self.on_disconnect()
+
+            # Close the channel
+            await self.close()
+
+        except asyncio.CancelledError:
+            # Normal cancellation during shutdown
+            logger.debug("Connection duration watchdog cancelled")

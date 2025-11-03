@@ -62,7 +62,7 @@ getting the response with the return value.
 ```python
 import uvicorn
 from fastapi import FastAPI
-from fastapi_ws_rpc import RpcMethodsBase, WebsocketRPCEndpoint
+from fastapi_ws_rpc import RpcMethodsBase, WebSocketRpcEndpoint
 
 
 # Methods to expose to the clients
@@ -74,7 +74,7 @@ class ConcatServer(RpcMethodsBase):
 # Init the FAST-API app
 app = FastAPI()
 # Create an endpoint and load it with the methods to expose
-endpoint = WebsocketRPCEndpoint(ConcatServer())
+endpoint = WebSocketRpcEndpoint(ConcatServer())
 # add the endpoint to the app
 endpoint.register_route(app, "/ws")
 

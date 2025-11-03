@@ -44,9 +44,9 @@ class WebSocketSimplifier(SimpleWebSocket):
         await self.websocket.close(code)
 
 
-class WebsocketRPCEndpoint:
+class WebSocketRpcEndpoint:
     """
-    A websocket RPC sever endpoint, exposing RPC methods
+    A websocket RPC server endpoint, exposing RPC methods
     """
 
     def __init__(
@@ -58,6 +58,9 @@ class WebsocketRPCEndpoint:
         frame_type: WebSocketFrameType = WebSocketFrameType.Text,
         serializing_socket_cls: type[SimpleWebSocket] = JsonSerializingWebSocket,
         rpc_channel_get_remote_id: bool = False,
+        max_message_size: int | None = None,
+        max_pending_requests: int | None = None,
+        max_connection_duration: float | None = None,
     ) -> None:
         """[summary]
 
@@ -68,6 +71,16 @@ class WebsocketRPCEndpoint:
             on_disconnect (List[coroutine], optional): Callbacks per disconnection
             on_connect(List[coroutine], optional): Callbacks per connection (Server
             spins the callbacks as a new task, not waiting on it.)
+            frame_type (WebSocketFrameType, optional): Frame type for websocket messages
+            serializing_socket_cls (type[SimpleWebSocket], optional): Socket wrapper class
+            rpc_channel_get_remote_id (bool, optional): Whether to sync channel IDs
+            max_message_size (int, optional): Maximum allowed message size in bytes (default 10MB).
+                                            Prevents DoS attacks via extremely large JSON payloads.
+            max_pending_requests (int, optional): Maximum number of pending RPC requests (default 1000).
+                                                Prevents resource exhaustion from request flooding.
+            max_connection_duration (float, optional): Maximum time in seconds that connections
+                                                      can remain open. After this time, connections
+                                                      will be gracefully closed. None means no limit.
         """
         self.manager = manager if manager is not None else ConnectionManager()
         self.methods = methods if methods is not None else RpcMethodsBase()
@@ -77,6 +90,9 @@ class WebsocketRPCEndpoint:
         self._frame_type = frame_type
         self._serializing_socket_cls = serializing_socket_cls
         self._rpc_channel_get_remote_id = rpc_channel_get_remote_id
+        self._max_message_size = max_message_size
+        self._max_pending_requests = max_pending_requests
+        self._max_connection_duration = max_connection_duration
 
     async def main_loop(
         self, websocket: WebSocket, client_id: str | None = None, **kwargs: Any
@@ -84,13 +100,22 @@ class WebsocketRPCEndpoint:
         try:
             await self.manager.connect(websocket)
             logger.info("Client connected", {"remote_address": websocket.client})
-            simple_websocket = self._serializing_socket_cls(
-                WebSocketSimplifier(websocket, frame_type=self._frame_type)
-            )  # type: ignore[call-arg]
+            # Create WebSocket wrapper with optional message size limit
+            if self._max_message_size is not None:
+                simple_websocket = self._serializing_socket_cls(
+                    WebSocketSimplifier(websocket, frame_type=self._frame_type),
+                    max_message_size=self._max_message_size,
+                )  # type: ignore[call-arg]
+            else:
+                simple_websocket = self._serializing_socket_cls(
+                    WebSocketSimplifier(websocket, frame_type=self._frame_type)
+                )  # type: ignore[call-arg]
             channel = RpcChannel(
                 self.methods,
                 simple_websocket,
                 sync_channel_id=self._rpc_channel_get_remote_id,
+                max_pending_requests=self._max_pending_requests,
+                max_connection_duration=self._max_connection_duration,
                 **kwargs,
             )
             # register connect / disconnect handler
@@ -106,15 +131,24 @@ class WebsocketRPCEndpoint:
                 client_port = websocket.client.port if websocket.client else "unknown"
                 logger.info(f"Client disconnected - {client_port} :: {channel.id}")
                 await self.handle_disconnect(websocket, channel)
-            except Exception:
-                # cover cases like - RuntimeError('Cannot call "send" once a close
-                # message has been sent.')
+            except (
+                RuntimeError,
+                ConnectionError,
+                OSError,
+                asyncio.CancelledError,
+            ) as e:
+                # Cover cases like RuntimeError('Cannot call "send" once a close
+                # message has been sent.') and various connection failures
                 client_port = websocket.client.port if websocket.client else "unknown"
-                logger.info(f"Client connection failed - {client_port} :: {channel.id}")
+                logger.info(
+                    f"Client connection failed - {client_port} :: {channel.id}: "
+                    f"{type(e).__name__}: {e}"
+                )
                 await self.handle_disconnect(websocket, channel)
-        except Exception:
+        except (RuntimeError, ConnectionError, OSError, ValueError, TypeError) as e:
+            # Handle initialization and connection setup failures
             client_port = websocket.client.port if websocket.client else "unknown"
-            logger.exception(f"Failed to serve - {client_port}")
+            logger.exception(f"Failed to serve - {client_port}: {type(e).__name__}")
             self.manager.disconnect(websocket)
 
     async def handle_disconnect(

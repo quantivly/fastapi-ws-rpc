@@ -1,0 +1,3 @@
+- The QSpace client (located in ../qspace-client) is the only downstream dependency of fastapi_ws_rpc, and we control both repositories.
+- When making breaking changes to fastapi_ws_rpc, we need to make sure the QSpace client is updated accordingly.
+- To rebuild and restart the QSpace client, you can use `docker build -t quantivly/qspace:current . && q restart -m qspace`. Note that if you're working on a branch, you might need to also use `--no-cachce` to force the rebuild.

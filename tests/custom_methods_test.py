@@ -9,7 +9,7 @@ from fastapi import APIRouter, FastAPI, WebSocket
 from fastapi_ws_rpc.rpc_methods import RpcMethodsBase
 from fastapi_ws_rpc.utils import gen_uid
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
-from fastapi_ws_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
+from fastapi_ws_rpc.websocket_rpc_endpoint import WebSocketRpcEndpoint
 
 # Add parent path to use local src as package for tests
 sys.path.append(
@@ -36,7 +36,7 @@ def setup_calc_server():
     app = FastAPI()
     router = APIRouter()
     # expose calculator methods
-    endpoint = WebsocketRPCEndpoint(RpcCalculator())
+    endpoint = WebSocketRpcEndpoint(RpcCalculator())
     # init the endpoint
 
     @router.websocket("/ws/{client_id}")

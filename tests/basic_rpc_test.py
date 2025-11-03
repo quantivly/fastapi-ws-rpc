@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi_ws_rpc.logger import LoggingModes, logging_config
 from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
-from fastapi_ws_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
+from fastapi_ws_rpc.websocket_rpc_endpoint import WebSocketRpcEndpoint
 
 # Set debug logs (and direct all logs to UVICORN format)
 logging_config.set_mode(LoggingModes.UVICORN, logging.DEBUG)
@@ -22,7 +22,7 @@ uri = f"ws://localhost:{PORT}/ws"
 
 def setup_server():
     app = FastAPI()
-    endpoint = WebsocketRPCEndpoint(RpcUtilityMethods())
+    endpoint = WebSocketRpcEndpoint(RpcUtilityMethods())
     endpoint.register_route(app)
     uvicorn.run(app, port=PORT)
 

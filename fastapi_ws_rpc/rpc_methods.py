@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from .utils import gen_uid
 
 if TYPE_CHECKING:
-    from .rpc_channel import RpcChannel
+    from ._internal.protocols import RpcCallable
 
 PING_RESPONSE = "pong"
 # list of internal methods that can be called from remote
@@ -32,9 +32,9 @@ class RpcMethodsBase:
     """
 
     def __init__(self) -> None:
-        self._channel: RpcChannel | None = None
+        self._channel: RpcCallable | None = None
 
-    def _set_channel_(self, channel: RpcChannel) -> None:
+    def _set_channel_(self, channel: RpcCallable) -> None:
         """
         Allows the channel to share access to its functions to the methods once
         nested under it
@@ -42,7 +42,7 @@ class RpcMethodsBase:
         self._channel = channel
 
     @property
-    def channel(self) -> RpcChannel | None:
+    def channel(self) -> RpcCallable | None:
         return self._channel
 
     def _copy_(self) -> RpcMethodsBase:
@@ -77,7 +77,7 @@ class RpcUtilityMethods(RpcMethodsBase):
 
     def __init__(self) -> None:
         """
-        endpoint (WebsocketRPCEndpoint): the endpoint these methods are loaded into
+        endpoint (WebSocketRpcEndpoint): the endpoint these methods are loaded into
         """
         super().__init__()
 

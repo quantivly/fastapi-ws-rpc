@@ -13,7 +13,7 @@ from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
 from fastapi_ws_rpc.simplewebsocket import SimpleWebSocket
 from fastapi_ws_rpc.utils import pydantic_serialize
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
-from fastapi_ws_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
+from fastapi_ws_rpc.websocket_rpc_endpoint import WebSocketRpcEndpoint
 
 # Set debug logs (and direct all logs to UVICORN format)
 logging_config.set_mode(LoggingModes.UVICORN, logging.DEBUG)
@@ -47,7 +47,7 @@ class BinarySerializingWebSocket(SimpleWebSocket):
 
 def setup_server():
     app = FastAPI()
-    endpoint = WebsocketRPCEndpoint(
+    endpoint = WebSocketRpcEndpoint(
         RpcUtilityMethods(),
         frame_type=WebSocketFrameType.Binary,
         serializing_socket_cls=BinarySerializingWebSocket,

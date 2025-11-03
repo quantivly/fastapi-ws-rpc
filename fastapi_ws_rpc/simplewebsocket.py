@@ -8,6 +8,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any, TypeVar
 
+from .exceptions import RpcMessageTooLargeError
 from .logger import get_logger
 from .utils import pydantic_serialize
 
@@ -15,6 +16,10 @@ logger = get_logger(__name__)
 
 # Type variable for the socket message type
 T = TypeVar("T")
+
+# Default maximum message size: 10MB
+# This prevents DoS attacks via extremely large JSON payloads
+DEFAULT_MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 class SimpleWebSocket(ABC):
@@ -68,9 +73,14 @@ class JsonSerializingWebSocket(SimpleWebSocket):
     """
     A wrapper for websocket objects that automatically serializes and deserializes
     JSON messages.
+
+    Provides message size validation to prevent denial-of-service attacks via
+    extremely large payloads.
     """
 
-    def __init__(self, websocket: Any) -> None:
+    def __init__(
+        self, websocket: Any, max_message_size: int = DEFAULT_MAX_MESSAGE_SIZE
+    ) -> None:
         """
         Initialize the JSON serializing websocket.
 
@@ -78,12 +88,12 @@ class JsonSerializingWebSocket(SimpleWebSocket):
             websocket: A websocket object with send/recv/close methods.
                       This can be a websockets.WebSocketClientProtocol or any object
                       that provides these methods.
+            max_message_size: Maximum allowed message size in bytes (default 10MB).
+                             Messages exceeding this size will be rejected before
+                             deserialization to prevent resource exhaustion.
         """
         self._websocket = websocket
-        self.messages: dict[str, dict[str, Any]] = {
-            "request_messages": {},
-            "ack_messages": {},
-        }
+        self._max_message_size = max_message_size
 
     @property
     def closed(self) -> bool:
@@ -138,28 +148,45 @@ class JsonSerializingWebSocket(SimpleWebSocket):
         """
         Receive and deserialize a message from the websocket.
 
+        Validates message size before deserialization to prevent DoS attacks
+        via extremely large JSON payloads.
+
         Returns:
             The deserialized message.
+
+        Raises:
+            RpcMessageTooLargeError: If the message exceeds max_message_size.
         """
         logger.debug("Waiting for message...")
         message = await self._websocket.recv()
-        logger.debug(f"Received raw message: {message}")
+
+        # Validate message size BEFORE deserialization
+        # This prevents memory exhaustion from huge JSON payloads
+        message_size: int
+        if isinstance(message, str):
+            message_size = len(message.encode("utf-8"))
+        elif isinstance(message, bytes):
+            message_size = len(message)
+        else:
+            message_size = 0
+
+        if message_size > self._max_message_size:
+            logger.error(
+                f"Received message exceeds size limit: {message_size} bytes "
+                f"(limit: {self._max_message_size} bytes)"
+            )
+            raise RpcMessageTooLargeError(
+                f"Incoming message size ({message_size} bytes) exceeds limit "
+                f"({self._max_message_size} bytes). "
+                f"This may indicate a malicious payload or misconfiguration."
+            )
+
+        logger.debug(f"Received raw message ({message_size} bytes)")
 
         deserialized = self._deserialize(message)
         logger.debug(f"Deserialized message: {deserialized}")
 
         return deserialized
-
-    async def receive_text(self) -> dict[str, dict[str, Any]] | None:
-        """
-        Legacy method for compatibility.
-
-        Returns:
-            dict: The message dictionary if available.
-        """
-        if self.messages is not None:
-            return self.messages
-        return None
 
     async def close(self, code: int = 1000) -> None:
         """

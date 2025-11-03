@@ -9,7 +9,7 @@ from websockets.exceptions import InvalidStatusCode
 from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
 from fastapi_ws_rpc.utils import gen_uid
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
-from fastapi_ws_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
+from fastapi_ws_rpc.websocket_rpc_endpoint import WebSocketRpcEndpoint
 
 # Configurable
 PORT = int(os.environ.get("PORT") or "8000")
@@ -29,7 +29,7 @@ async def check_token_header(websocket: WebSocket, x_token: str = Header(...)):
 def setup_server():
     app = FastAPI()
     router = APIRouter()
-    endpoint = WebsocketRPCEndpoint(RpcUtilityMethods())
+    endpoint = WebSocketRpcEndpoint(RpcUtilityMethods())
 
     @router.websocket("/ws/{client_id}")
     async def websocket_rpc_endpoint(
