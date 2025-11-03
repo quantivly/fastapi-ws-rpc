@@ -218,18 +218,21 @@ class WebSocketRpcClient:
             raw_ws = await websockets.connect(self.uri, **self.connect_kwargs)
 
             # Step 2-4: Initialize RPC layer (wrap socket, create channel, register handlers)
-            # This can raise validation/initialization errors, so we wrap in try-except
+            # IMPORTANT: We use nested try-except blocks to ensure proper cleanup at each stage.
+            # If RPC initialization fails, we need to close the raw WebSocket before re-raising.
             try:
                 logger.debug(
                     f"Wrapping WebSocket with {self._serializing_socket_cls.__name__}"
                 )
-                # Pass max_message_size if specified, otherwise use default
+                # Conditionally pass max_message_size to prevent DoS via large payloads
                 if self._max_message_size is not None:
                     self.ws = self._serializing_socket_cls(raw_ws, max_message_size=self._max_message_size)  # type: ignore[call-arg]
                 else:
                     self.ws = self._serializing_socket_cls(raw_ws)  # type: ignore[call-arg]
 
-                # Create RPC channel with production hardening parameters
+                # Create RPC channel with production hardening parameters:
+                # - max_pending_requests: Prevents memory exhaustion from request flooding
+                # - max_connection_duration: Auto-closes long-lived connections for rotation
                 self.channel = RpcChannel(
                     self.methods,
                     self.ws,
@@ -238,37 +241,42 @@ class WebSocketRpcClient:
                     max_connection_duration=self._max_connection_duration,
                 )
 
-                # Register handlers
+                # Register user-provided callbacks for lifecycle events
                 self.channel.register_connect_handler(self._on_connect)
                 self.channel.register_disconnect_handler(self._on_disconnect)
 
             except (ValidationError, ValueError, TypeError) as e:
-                # Clean up on RPC initialization errors
+                # RPC initialization failed (bad config, validation error, etc.)
+                # Clean up partial state to prevent resource leaks
                 logger.error(f"RPC initialization failed: {type(e).__name__}: {e}")
                 await self._cleanup_partial_init()
                 raise
 
             # Step 5-6: Start tasks and verify connection
-            # These use the initialized channel, so failures here need cleanup
+            # CRITICAL: These tasks depend on the channel being initialized above.
+            # If any fail, we must clean up ALL resources (ws, channel, tasks).
             try:
-                # Start reader task
+                # Start background message reader task (runs continuously until closed)
                 self._read_task = asyncio.create_task(self.reader())
 
-                # Initialize and start keep-alive if enabled
+                # Initialize and start keep-alive if enabled (interval > 0)
+                # Keep-alive detects unresponsive connections via periodic pings
                 if self._keep_alive_interval > 0:
                     self._keepalive = RpcKeepalive(
                         interval=self._keep_alive_interval,
                         max_consecutive_failures=self._max_consecutive_ping_failures,
-                        ping_fn=self.ping,
-                        close_fn=self.close,
+                        ping_fn=self.ping,  # Bound method - will use self.channel
+                        close_fn=self.close,  # Bound method - triggers cleanup
                     )
                     self._keepalive.start()
 
-                # Verify RPC is responsive
+                # Verify the RPC layer is working (not just socket connectivity)
+                # This performs actual RPC pings with retries to ensure bidirectional communication
                 await self.wait_on_rpc_ready()
 
             except Exception as e:
-                # Clean up on post-init failures
+                # Post-initialization failure (reader start failed, ping timeout, etc.)
+                # Must clean up ws, channel, and any started tasks
                 logger.error(f"Connection verification failed: {type(e).__name__}: {e}")
                 await self._cleanup_partial_init()
                 raise
@@ -277,14 +285,17 @@ class WebSocketRpcClient:
             if self._keepalive is not None:
                 self._keepalive.reset_failures()
 
-            # Step 7: Trigger connect callbacks
-            # This can raise exceptions from user callbacks
+            # Step 7: Trigger user-provided connect callbacks
+            # POLICY: User callback failures are logged but DON'T fail the connection.
+            # This prevents buggy user code from breaking the connection lifecycle.
+            # If you need strict callback handling, uncomment the raise below.
             try:
                 await self.channel.on_connect()
             except Exception as e:
-                # Log but don't fail connection if user callbacks fail
+                # User callback raised an exception - log but connection succeeds
                 logger.error(f"Connect callback failed: {type(e).__name__}: {e}")
-                # We could raise here if we want strict callback handling
+                # Uncomment to enforce strict callback handling:
+                # raise
 
             return self
 
@@ -363,7 +374,13 @@ class WebSocketRpcClient:
         3. Notifies disconnect handlers
         4. Cancels background tasks
         """
-        # Check if already closing (make this method idempotent)
+        # IDEMPOTENCY: Check if already closing to prevent duplicate cleanup
+        # This is critical because close() can be called from:
+        # - User code (explicit close)
+        # - Keepalive (on ping failure)
+        # - Reader task (on connection error)
+        # - Context manager __aexit__
+        # Without this guard, we'd get duplicate callbacks and task cancellation errors
         if self._closing:
             logger.debug("Close already in progress, skipping duplicate call")
             return
@@ -371,25 +388,28 @@ class WebSocketRpcClient:
         self._closing = True
         logger.info("Closing RPC client...")
 
-        # Signal that connection is closed
+        # Signal that connection is closed (unblocks any wait_on_reader() calls)
         self._connection_closed.set()
 
-        # Close underlying connection
+        # Close underlying WebSocket (suppress errors since connection may already be broken)
         if self.ws is not None:
             with suppress(RuntimeError, ConnectionClosed, WebSocketException):
                 await self.ws.close()
 
-        # Notify callbacks (but just once)
+        # Trigger disconnect handlers and close channel (but only if not already closed)
+        # This check prevents double-calling disconnect callbacks
         if self.channel and not self.channel.is_closed():
             try:
-                # Notify handlers
+                # Notify user-provided disconnect handlers
                 await self.channel.on_disconnect()
+                # Close channel (triggers promise cleanup, stops duration watchdog)
                 await self.channel.close()
             except (RuntimeError, ValueError, TypeError, AttributeError) as e:
-                # Log but don't raise - this is cleanup code that should not prevent shutdown
+                # POLICY: Don't raise during cleanup - log and continue
+                # We want to clean up all resources even if one step fails
                 logger.exception(f"Error during channel closure: {type(e).__name__}")
 
-        # Clear tasks (now async)
+        # Cancel background tasks (keepalive, reader)
         await self.cancel_tasks()
 
     async def cancel_tasks(self) -> None:
@@ -442,22 +462,33 @@ class WebSocketRpcClient:
         assert self.channel is not None, "Channel must be initialized"
 
         try:
+            # Main reader loop - continuously read and process messages
             while True:
                 raw_message = await self.ws.recv()
                 logger.debug("Received message via reader")
                 await self.channel.on_message(raw_message)
 
         except asyncio.CancelledError:
+            # Normal cancellation during shutdown (from cancel_reader_task())
+            # Signal that connection is closed but don't trigger full close()
+            # because close() already cancelled us
             logger.info("RPC read task was cancelled.")
             self._connection_closed.set()
 
         except ConnectionClosed:
+            # WebSocket connection lost (server closed, network error, etc.)
+            # Signal closed state and trigger full cleanup
             logger.info("Connection was terminated.")
             self._connection_closed.set()
             await self.close()
 
         except (ValidationError, ValueError, TypeError, RuntimeError, KeyError) as e:
-            # Message processing errors in the reader loop
+            # Message processing errors indicate protocol violations or bugs:
+            # - ValidationError: Invalid JSON-RPC 2.0 message structure
+            # - ValueError/TypeError: Bad data types or values
+            # - RuntimeError: Unexpected state errors
+            # - KeyError: Missing required fields in message
+            # These are FATAL - we can't recover, so we signal closed and re-raise
             logger.exception(f"RPC reader task failed: {type(e).__name__}")
             self._connection_closed.set()
             raise
@@ -472,6 +503,12 @@ class WebSocketRpcClient:
         received_response = None
         attempt_count = 0
 
+        # RETRY PATTERN: Try up to MAX_CONNECTION_ATTEMPTS times to verify RPC readiness
+        # This is necessary because:
+        # 1. Server may need time to process the connection
+        # 2. Reader task may not be fully started yet
+        # 3. Network conditions may cause transient failures
+        # If all attempts fail, we raise the last exception
         while (
             received_response is None and attempt_count < self.MAX_CONNECTION_ATTEMPTS
         ):
@@ -479,12 +516,16 @@ class WebSocketRpcClient:
                 logger.debug(
                     f"RPC ready check attempt {attempt_count + 1}/{self.MAX_CONNECTION_ATTEMPTS}"
                 )
+                # Send a ping with short timeout (1 second by default)
+                # This verifies bidirectional RPC communication
                 received_response = await asyncio.wait_for(
                     self.ping(), self.WAIT_FOR_INITIAL_CONNECTION
                 )
                 logger.debug(f"RPC ready check succeeded: {received_response}")
 
             except asyncio.TimeoutError:
+                # Ping timed out - server may be slow or reader not fully started
+                # Increment counter and retry (silent failure - we'll retry)
                 attempt_count += 1
                 logger.debug(f"RPC ready check timed out (attempt {attempt_count})")
 
@@ -495,8 +536,12 @@ class WebSocketRpcClient:
                 ConnectionError,
                 OSError,
             ) as e:
-                # Catch expected errors during initial connection establishment
-                # Don't catch system exceptions (KeyboardInterrupt, SystemExit, etc.)
+                # Expected errors during connection establishment:
+                # - RpcChannelClosedError: Channel closed during ping
+                # - RpcBackpressureError: Too many pending requests (rare during init)
+                # - RpcInvalidStateError: Channel not fully initialized
+                # - ConnectionError/OSError: Network-level issues
+                # NOTE: We don't catch system exceptions (KeyboardInterrupt, SystemExit)
                 logger.warning(f"RPC ready check failed: {e}")
                 attempt_count += 1
 
