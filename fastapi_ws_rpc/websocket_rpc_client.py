@@ -22,7 +22,7 @@ from websockets.exceptions import (
 )
 
 from .logger import get_logger
-from .rpc_channel import RpcChannel, on_connect_callback, on_disconnect_callback
+from .rpc_channel import OnConnectCallback, OnDisconnectCallback, RpcChannel
 from .rpc_methods import PING_RESPONSE, RpcMethodsBase
 from .simplewebsocket import JsonSerializingWebSocket, SimpleWebSocket
 
@@ -70,7 +70,9 @@ class WebSocketRpcClient:
         Args:
             retry_state: The current retry state containing exception information.
         """
-        logger.exception(retry_state.outcome.exception())
+        outcome = retry_state.outcome
+        if outcome is not None:
+            logger.exception(outcome.exception())
 
     # Default retry configuration for connection attempts
     DEFAULT_RETRY_CONFIG = {
@@ -88,14 +90,14 @@ class WebSocketRpcClient:
         self,
         uri: str,
         methods: RpcMethodsBase | None = None,
-        retry_config: dict | bool | None = None,
+        retry_config: dict[str, Any] | bool | None = None,
         default_response_timeout: float | None = None,
-        on_connect: list[on_connect_callback] | None = None,
-        on_disconnect: list[on_disconnect_callback] | None = None,
+        on_connect: list[OnConnectCallback] | None = None,
+        on_disconnect: list[OnDisconnectCallback] | None = None,
         keep_alive: float = 0,
         serializing_socket_cls: type[SimpleWebSocket] = JsonSerializingWebSocket,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> None:
         """
         Initialize the WebSocketRpcClient.
 
@@ -125,16 +127,16 @@ class WebSocketRpcClient:
         """
         self.uri = uri
         self.methods = methods or RpcMethodsBase()
-        self.connect_kwargs = kwargs
+        self.connect_kwargs: dict[str, Any] = kwargs
 
         # Set default timeout if not specified
         self.connect_kwargs.setdefault("open_timeout", 30)
 
         # State variables
-        self.ws = None
-        self.channel = None
-        self._read_task = None
-        self._keep_alive_task = None
+        self.ws: SimpleWebSocket | None = None
+        self.channel: RpcChannel | None = None
+        self._read_task: asyncio.Task[None] | None = None
+        self._keep_alive_task: asyncio.Task[None] | None = None
         self._connection_closed = asyncio.Event()
 
         # Configuration
@@ -142,16 +144,18 @@ class WebSocketRpcClient:
         self.default_response_timeout = default_response_timeout
 
         # Process retry configuration
+        self.retry_config: dict[str, Any] | None
         if retry_config is False:
             self.retry_config = None  # Disable retries
         elif retry_config is None:
             self.retry_config = self.DEFAULT_RETRY_CONFIG  # Use defaults
         else:
-            self.retry_config = retry_config  # Use custom config
+            # Ensure it's a dict, not bool True
+            self.retry_config = retry_config if isinstance(retry_config, dict) else None
 
         # Event handlers
-        self._on_disconnect = on_disconnect or []
-        self._on_connect = on_connect or []
+        self._on_disconnect: list[OnDisconnectCallback] = on_disconnect or []
+        self._on_connect: list[OnConnectCallback] = on_connect or []
 
         # Serialization
         self._serializing_socket_cls = serializing_socket_cls
@@ -190,7 +194,7 @@ class WebSocketRpcClient:
                 logger.debug(
                     f"Wrapping WebSocket with {self._serializing_socket_cls.__name__}"
                 )
-                self.ws = self._serializing_socket_cls(raw_ws)
+                self.ws = self._serializing_socket_cls(raw_ws)  # type: ignore[call-arg]
 
                 # Create RPC channel
                 self.channel = RpcChannel(
@@ -269,13 +273,12 @@ class WebSocketRpcClient:
         Returns:
             WebSocketRpcClient: The connected client instance.
         """
-        if self.retry_config is False or self.retry_config is None:
+        if self.retry_config is None:
             return await self.__connect__()
-        else:
-            connect_with_retry = retry(**self.retry_config)(self.__connect__)
-            return await connect_with_retry()
+        connect_with_retry = retry(**self.retry_config)(self.__connect__)
+        return await connect_with_retry()  # type: ignore[no-any-return]
 
-    async def __aexit__(self, *args, **kwargs) -> None:
+    async def __aexit__(self, *args: Any, **kwargs: Any) -> None:
         """
         Async context manager exit.
 
@@ -339,6 +342,8 @@ class WebSocketRpcClient:
         This task runs until the connection is closed or cancelled.
         Each received message is processed through the RPC channel.
         """
+        assert self.ws is not None, "WebSocket not initialized"
+        assert self.channel is not None, "Channel not initialized"
         try:
             while True:
                 raw_message = await self.ws.recv()
@@ -412,13 +417,14 @@ class WebSocketRpcClient:
                 logger.warning(f"RPC ready check failed: {e}")
                 attempt_count += 1
 
-    async def ping(self):
+    async def ping(self) -> Any:
         """
         Send a ping request to the server and wait for a response.
 
         Returns:
             The response object from the server's ping method.
         """
+        assert self.channel is not None, "Channel not initialized"
         logger.debug("Pinging server...")
         answer = await self.channel.other.ping()
         logger.debug(f"Got ping response: {answer}")
@@ -458,8 +464,11 @@ class WebSocketRpcClient:
                 logger.info("RPC Reader task was cancelled.")
 
     async def call(
-        self, name: str, args: dict | None = None, timeout: float | None = None
-    ):
+        self,
+        name: str,
+        args: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> Any:
         """
         Call a remote method on the server and wait for the response.
 
@@ -475,11 +484,12 @@ class WebSocketRpcClient:
             Various exceptions from the underlying RPC channel or if the connection
             is closed.
         """
+        assert self.channel is not None, "Channel not initialized"
         args = args or {}
         return await self.channel.call(name, args, timeout=timeout)
 
     @property
-    def other(self):
+    def other(self) -> Any:
         """
         Proxy object for calling remote methods.
 
