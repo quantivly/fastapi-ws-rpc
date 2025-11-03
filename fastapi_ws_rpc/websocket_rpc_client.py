@@ -29,7 +29,7 @@ from .simplewebsocket import JsonSerializingWebSocket, SimpleWebSocket
 logger = get_logger(__name__)
 
 
-def isNotForbidden(value: Any) -> bool:
+def is_not_forbidden(value: Any) -> bool:
     """
     Check if the exception is not an authorization-related status code.
 
@@ -75,7 +75,7 @@ class WebSocketRpcClient:
     # Default retry configuration for connection attempts
     DEFAULT_RETRY_CONFIG = {
         "wait": wait.wait_random_exponential(min=0.1, max=120),
-        "retry": retry_if_exception(isNotForbidden),
+        "retry": retry_if_exception(is_not_forbidden),
         "reraise": True,
         "retry_error_callback": logerror,
     }
