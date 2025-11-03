@@ -84,23 +84,21 @@ class JsonRpcRequest(BaseModel):
         id: Request identifier. If None, this is a notification (no response expected)
         method: Name of the method to call
         params: Method parameters. Can be:
-            - dict: Named parameters (recommended) - passed as **kwargs to method
-            - list: Positional parameters (LIMITED SUPPORT) - wrapped in params kwarg
+            - dict: Named parameters - passed as **kwargs to method
             - None: No parameters
 
-    Note on Positional Parameters:
-        This implementation has limited support for positional parameters (list).
-        When a list is provided, it's wrapped in a single "params" keyword argument
-        rather than being unpacked as true positional arguments. This is a known
-        limitation that would require method signature introspection to fix properly.
+    Note on Parameters:
+        This implementation supports named parameters only (dict format).
+        Positional parameters (list format) are not supported and will be
+        rejected with a ValueError during parameter conversion.
 
-        Recommended: Always use named parameters (dict) for full compatibility.
+        Always use named parameters (dict) for compatibility.
     """
 
     jsonrpc: str = "2.0"
     id: Optional[Union[str, int]] = None
     method: str
-    params: Optional[Union[dict[str, Any], list[Any]]] = None
+    params: Optional[dict[str, Any]] = None
 
 
 class JsonRpcError(BaseModel):

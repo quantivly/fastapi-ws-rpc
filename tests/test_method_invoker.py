@@ -249,19 +249,26 @@ class TestParameterConversion:
         assert isinstance(result, dict)
 
     @pytest.mark.asyncio
-    async def test_convert_list_params(self, method_invoker: RpcMethodInvoker) -> None:
+    async def test_convert_list_params_raises_error(
+        self, method_invoker: RpcMethodInvoker
+    ) -> None:
         """
-        Test converting list parameters (positional params).
+        Test that list parameters raise ValueError.
 
         Verifies that:
-        - List params are wrapped in "params" key
-        - This is a known limitation of the implementation
+        - List params are not supported
+        - Clear error message is provided
+        - ValueError is raised with appropriate message
         """
         params = [1, 2, 3]
-        result = method_invoker.convert_params(params)
 
-        assert result == {"params": params}
-        assert isinstance(result, dict)
+        with pytest.raises(ValueError) as exc_info:
+            method_invoker.convert_params(params)
+
+        error_message = str(exc_info.value).lower()
+        assert "positional parameters" in error_message
+        assert "not supported" in error_message
+        assert "array format" in error_message
 
     @pytest.mark.asyncio
     async def test_convert_none_params(self, method_invoker: RpcMethodInvoker) -> None:

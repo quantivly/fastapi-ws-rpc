@@ -270,6 +270,31 @@ class TestRequestHandling:
         assert "invalid parameters" in sent_data["error"]["message"].lower()
 
     @pytest.mark.asyncio
+    async def test_handle_request_positional_params_rejected(
+        self, protocol_handler: RpcProtocolHandler, mock_send: AsyncMock
+    ) -> None:
+        """
+        Test handling request with positional parameters (array format).
+
+        Verifies that:
+        - Positional parameters (list/array format) are rejected
+        - Error response is sent with INVALID_PARAMS code
+        - Error message indicates positional params are not supported
+        """
+        # Note: Since JsonRpcRequest now only accepts dict params, we need to
+        # test positional param rejection at the method_invoker level
+        # Manually call convert_params with list to test rejection
+        # This simulates what would happen if a list somehow got through
+        import pytest
+
+        with pytest.raises(ValueError) as exc_info:
+            protocol_handler._method_invoker.convert_params([1, 2, 3])
+
+        error_msg = str(exc_info.value).lower()
+        assert "positional parameters" in error_msg
+        assert "not supported" in error_msg
+
+    @pytest.mark.asyncio
     async def test_handle_request_method_raises_exception(
         self, protocol_handler: RpcProtocolHandler, mock_send: AsyncMock
     ) -> None:

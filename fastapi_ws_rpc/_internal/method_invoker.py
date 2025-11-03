@@ -98,48 +98,57 @@ class RpcMethodInvoker:
 
         return (True, None, None)
 
-    def convert_params(
-        self, params: dict[str, Any] | list[Any] | None
-    ) -> dict[str, Any]:
+    def convert_params(self, params: dict[str, Any] | None) -> dict[str, Any]:
         """
         Convert JSON-RPC params to method arguments.
 
-        JSON-RPC 2.0 supports three parameter formats:
-        1. Named parameters (dict) - passed as **kwargs
-        2. Positional parameters (list) - wrapped in "params" kwarg (limitation)
-        3. No parameters (None) - empty dict
+        This implementation supports named parameters only (dict format).
+        Positional parameters (list format) are not supported.
 
-        Note: List params are wrapped in a "params" keyword due to lack of
-        signature introspection. True positional args would require inspecting
-        the method signature and matching list items to parameter positions.
+        Parameters
+        ----------
+        params : dict[str, Any] | None
+            JSON-RPC parameters as dict (named params) or None
 
-        Args:
-            params: JSON-RPC parameters (dict, list, or None)
-
-        Returns:
+        Returns
+        -------
+        dict[str, Any]
             Dictionary of keyword arguments for method invocation
 
-        Example:
-            ```python
-            # Named params
-            convert_params({"a": 1, "b": 2})  # -> {"a": 1, "b": 2}
+        Raises
+        ------
+        ValueError
+            If params is a list (positional params not supported)
 
-            # Positional params (wrapped)
-            convert_params([1, 2])  # -> {"params": [1, 2]}
+        Examples
+        --------
+        Named params (supported):
 
-            # No params
-            convert_params(None)  # -> {}
-            ```
+        >>> convert_params({"a": 1, "b": 2})
+        {"a": 1, "b": 2}
+
+        No params (supported):
+
+        >>> convert_params(None)
+        {}
+
+        Positional params (not supported - raises ValueError):
+
+        >>> convert_params([1, 2])
+        ValueError: Positional parameters not supported
         """
-        if isinstance(params, dict):
+        if params is None:
+            return {}
+        elif isinstance(params, dict):
             return params
         elif isinstance(params, list):
-            # For positional parameters, wrap in params dict
-            # This is a limitation - true positional args would require
-            # introspection of method signature
-            return {"params": params}
+            raise ValueError(
+                "Positional parameters (array format) are not supported. "
+                "Please use named parameters (object format) instead. "
+                "Example: {'a': 1, 'b': 2} instead of [1, 2]"
+            )
         else:
-            return {}
+            raise ValueError(f"Invalid params type: {type(params).__name__}")
 
     def get_return_type(self, method: Any) -> Any:
         """
@@ -169,9 +178,7 @@ class RpcMethodInvoker:
             else str
         )
 
-    async def invoke(
-        self, method_name: str, params: dict[str, Any] | list[Any] | None
-    ) -> Any:
+    async def invoke(self, method_name: str, params: dict[str, Any] | None) -> Any:
         """
         Invoke a method with the given parameters.
 
@@ -183,7 +190,7 @@ class RpcMethodInvoker:
 
         Args:
             method_name: Name of the method to invoke
-            params: Method parameters (dict for named, list for positional, None for no params)
+            params: Method parameters (dict for named params, or None for no params)
 
         Returns:
             The return value from the invoked method (or NoResponse sentinel)

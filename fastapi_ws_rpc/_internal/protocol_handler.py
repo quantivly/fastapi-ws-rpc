@@ -136,9 +136,40 @@ class RpcProtocolHandler:
                 await self.send_error(request.id, error_code, error_msg)
             return
 
+        # Convert and validate parameters first
+        # This catches ValueError from unsupported parameter formats (e.g., positional params)
+        try:
+            arguments = self._method_invoker.convert_params(request.params)
+        except ValueError as exc:
+            # Parameter format error (e.g., positional params not supported)
+            logger.exception(
+                f"Invalid parameter format for method '{method_name}': {exc}",
+                extra={
+                    "method": method_name,
+                    "request_id": request.id,
+                    "error_type": "ValueError",
+                },
+            )
+            if request.id is not None:
+                await self.send_error(
+                    request.id,
+                    JsonRpcErrorCode.INVALID_PARAMS,
+                    f"Invalid parameters: {exc!s}",
+                    {"type": "ValueError", "method": method_name},
+                )
+            return
+
         # Execute method
         try:
-            result = await self._method_invoker.invoke(method_name, request.params)
+            method = getattr(self._method_invoker._methods, method_name)
+            result = await method(**arguments)
+
+            # Type conversion if needed
+            if result is not NoResponse:
+                result_type = self._method_invoker.get_return_type(method)
+                # If no type given - try to convert to string
+                if result_type is str and not isinstance(result, str):
+                    result = str(result)
 
             # Only send response if not a notification and result is not NoResponse
             if result is not NoResponse and request.id is not None:

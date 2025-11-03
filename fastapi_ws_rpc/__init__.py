@@ -22,7 +22,13 @@ from fastapi_ws_rpc.exceptions import (
 
 # Logging utilities
 from fastapi_ws_rpc.logger import LoggingModes, get_logger, logging_config
-from fastapi_ws_rpc.rpc_methods import RpcMethodsBase
+from fastapi_ws_rpc.rpc_channel import (
+    OnConnectCallback,
+    OnDisconnectCallback,
+    OnErrorCallback,
+    RpcChannel,
+)
+from fastapi_ws_rpc.rpc_methods import NoResponse, RpcMethodsBase, RpcUtilityMethods
 
 # JSON-RPC schemas
 from fastapi_ws_rpc.schemas import (
@@ -35,6 +41,9 @@ from fastapi_ws_rpc.schemas import (
 
 # WebSocket abstractions (for advanced usage)
 from fastapi_ws_rpc.simplewebsocket import JsonSerializingWebSocket, SimpleWebSocket
+
+# Utility functions
+from fastapi_ws_rpc.utils import gen_uid
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
 from fastapi_ws_rpc.websocket_rpc_endpoint import WebSocketRpcEndpoint
 
@@ -44,22 +53,35 @@ __all__ = [
     "ConnectionManager",
     "JsonRpcError",
     "JsonRpcErrorCode",
+    # JSON-RPC schemas
     "JsonRpcRequest",
     "JsonRpcResponse",
     "JsonSerializingWebSocket",
     "LoggingModes",
+    # Utilities
+    "NoResponse",
+    # Type aliases for callbacks
+    "OnConnectCallback",
+    "OnDisconnectCallback",
+    "OnErrorCallback",
     "RemoteValueError",
     "RpcBackpressureError",
+    # Core RPC classes
+    "RpcChannel",
     "RpcChannelClosedError",
+    # Exceptions
     "RpcError",
     "RpcInvalidStateError",
     "RpcMessageTooLargeError",
     "RpcMethodsBase",
+    "RpcUtilityMethods",
+    # WebSocket abstractions
     "SimpleWebSocket",
     "UnknownMethodError",
     "WebSocketFrameType",
     "WebSocketRpcClient",
     "WebSocketRpcEndpoint",
+    "gen_uid",
     "get_logger",
     "logging_config",
 ]
