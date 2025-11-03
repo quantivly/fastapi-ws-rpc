@@ -46,6 +46,11 @@ class RpcCallable(Protocol):
         ```
     """
 
+    @property
+    def id(self) -> str:
+        """Get the unique identifier for this RPC channel."""
+        ...
+
     async def async_call(
         self,
         name: str,
@@ -102,6 +107,30 @@ class RpcCallable(Protocol):
         Args:
             name: The name of the remote method to call
             args: Optional dictionary of named arguments
+        """
+        ...
+
+    def get_saved_response(self, call_id: str) -> JsonRpcResponse:
+        """
+        Retrieve a saved response for a callback pattern.
+
+        Args:
+            call_id: The call ID of the saved response
+
+        Returns:
+            The saved JSON-RPC response
+
+        Raises:
+            KeyError: If no response is saved for the given call_id
+        """
+        ...
+
+    def clear_saved_call(self, call_id: str) -> None:
+        """
+        Clear a saved call/response from memory.
+
+        Args:
+            call_id: The call ID to clear
         """
         ...
 

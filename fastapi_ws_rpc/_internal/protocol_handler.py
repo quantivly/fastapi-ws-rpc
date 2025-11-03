@@ -121,6 +121,11 @@ class RpcProtocolHandler:
             method_name
         )
         if not is_valid:
+            # When method is invalid, error_code and error_msg are guaranteed to be non-None
+            assert (
+                error_code is not None
+            ), "error_code must be set when is_valid is False"
+            assert error_msg is not None, "error_msg must be set when is_valid is False"
             if request.id is not None:
                 await self.send_error(request.id, error_code, error_msg)
             return

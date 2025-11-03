@@ -159,6 +159,7 @@ class WebSocketRpcClient:
         self._read_task: asyncio.Task[None] | None = None
         self._keep_alive_task: asyncio.Task[None] | None = None
         self._connection_closed = asyncio.Event()
+        self._closing = False  # Flag to make close() idempotent
 
         # Configuration
         self._keep_alive_interval = keep_alive
@@ -369,11 +370,20 @@ class WebSocketRpcClient:
         """
         Close the WebSocket connection and clean up resources.
 
+        This method is idempotent and can be safely called multiple times.
+
         This method:
-        1. Closes the WebSocket connection if open
-        2. Notifies disconnect handlers
-        3. Cancels background tasks
+        1. Checks if already closing (prevents race conditions)
+        2. Closes the WebSocket connection if open
+        3. Notifies disconnect handlers
+        4. Cancels background tasks
         """
+        # Check if already closing (make this method idempotent)
+        if self._closing:
+            logger.debug("Close already in progress, skipping duplicate call")
+            return
+
+        self._closing = True
         logger.info("Closing RPC client...")
 
         # Signal that connection is closed
@@ -440,6 +450,10 @@ class WebSocketRpcClient:
         """
         # Validate connection state before starting reader loop
         self._validate_connected()
+
+        # After validation, ws and channel are guaranteed to be non-None
+        assert self.ws is not None, "WebSocket must be connected"
+        assert self.channel is not None, "Channel must be initialized"
 
         try:
             while True:
