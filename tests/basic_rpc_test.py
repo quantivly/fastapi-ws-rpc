@@ -58,7 +58,7 @@ async def test_ping(server):
         uri, RpcUtilityMethods(), default_response_timeout=4
     ) as client:
         try:
-            await client.other._ping_()
+            await client.other.ping()
             passed = True
         except Exception:
             logging.exception("Ping test failed")
