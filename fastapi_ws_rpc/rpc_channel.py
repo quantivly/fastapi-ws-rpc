@@ -127,15 +127,15 @@ class RpcCaller:
 
 
 # Callback signatures
-async def OnConnectCallback(channel):
+async def on_connect_callback(channel):
     pass
 
 
-async def OnDisconnectCallback(channel):
+async def on_disconnect_callback(channel):
     pass
 
 
-async def OnErrorCallback(channel, err: Exception):
+async def on_error_callback(channel, err: Exception):
     pass
 
 
@@ -197,8 +197,8 @@ class RpcChannel:
         # TODO - pass remote methods object to support validation before call
         self.other = RpcCaller(self)
         # core event callback registers
-        self._connect_handlers: list[OnConnectCallback] = []
-        self._disconnect_handlers: list[OnDisconnectCallback] = []
+        self._connect_handlers: list[on_connect_callback] = []
+        self._disconnect_handlers: list[on_disconnect_callback] = []
         self._error_handlers = []
         # internal event
         self._closed = asyncio.Event()
@@ -302,7 +302,9 @@ class RpcChannel:
             await self.on_error(e)
             raise
 
-    def register_connect_handler(self, coros: Optional[list[OnConnectCallback]] = None):
+    def register_connect_handler(
+        self, coros: Optional[list[on_connect_callback]] = None
+    ):
         """
         Register a connection handler callback that will be called (As an async
         task)) with the channel
@@ -313,7 +315,7 @@ class RpcChannel:
             self._connect_handlers.extend(coros)
 
     def register_disconnect_handler(
-        self, coros: Optional[list[OnDisconnectCallback]] = None
+        self, coros: Optional[list[on_disconnect_callback]] = None
     ):
         """
         Register a disconnect handler callback that will be called (As an async
@@ -324,7 +326,7 @@ class RpcChannel:
         if coros is not None:
             self._disconnect_handlers.extend(coros)
 
-    def register_error_handler(self, coros: Optional[list[OnErrorCallback]] = None):
+    def register_error_handler(self, coros: Optional[list[on_error_callback]] = None):
         """
         Register an error handler callback that will be called (As an async
         task)) with the channel and triggered error.

@@ -22,7 +22,7 @@ from websockets.exceptions import (
 )
 
 from .logger import get_logger
-from .rpc_channel import OnConnectCallback, OnDisconnectCallback, RpcChannel
+from .rpc_channel import RpcChannel, on_connect_callback, on_disconnect_callback
 from .rpc_methods import PING_RESPONSE, RpcMethodsBase
 from .simplewebsocket import JsonSerializingWebSocket, SimpleWebSocket
 
@@ -90,8 +90,8 @@ class WebSocketRpcClient:
         methods: RpcMethodsBase | None = None,
         retry_config: dict | bool | None = None,
         default_response_timeout: float | None = None,
-        on_connect: list[OnConnectCallback] | None = None,
-        on_disconnect: list[OnDisconnectCallback] | None = None,
+        on_connect: list[on_connect_callback] | None = None,
+        on_disconnect: list[on_disconnect_callback] | None = None,
         keep_alive: float = 0,
         serializing_socket_cls: type[SimpleWebSocket] = JsonSerializingWebSocket,
         **kwargs,
