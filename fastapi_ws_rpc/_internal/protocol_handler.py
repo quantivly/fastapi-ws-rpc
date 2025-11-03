@@ -155,7 +155,10 @@ class RpcProtocolHandler:
                 )
 
         except Exception as exc:
-            # Internal error during method execution
+            # Broad catch for JSON-RPC 2.0 compliance: any error during method
+            # execution must be converted to a JSON-RPC error response.
+            # This is intentionally broad to handle all application errors.
+            # System exceptions (KeyboardInterrupt, SystemExit) are not caught.
             logger.exception(f"Failed to execute method '{method_name}': {exc}")
             if request.id is not None:
                 await self.send_error(

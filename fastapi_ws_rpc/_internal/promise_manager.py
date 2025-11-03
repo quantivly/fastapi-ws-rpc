@@ -357,6 +357,9 @@ class RpcPromiseManager:
         except asyncio.CancelledError:
             logger.debug("Promise cleanup task cancelled")
         except Exception as e:
+            # Safety net for background task - prevent cleanup task from crashing
+            # This is intentionally broad to ensure cleanup continues despite errors
+            # System exceptions (KeyboardInterrupt, SystemExit) are not caught
             logger.error(f"Error in periodic promise cleanup: {e}", exc_info=True)
 
     def close(self) -> None:

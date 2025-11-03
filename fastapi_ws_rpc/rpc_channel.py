@@ -227,7 +227,9 @@ class RpcChannel:
         try:
             await self._protocol_handler.handle_message(data)
         except Exception as e:
-            # Handle message processing errors
+            # Catch all application errors for logging and error handler callbacks
+            # The exception is re-raised to propagate to the caller
+            # System exceptions (KeyboardInterrupt, SystemExit) are not caught
             logger.error(f"Error processing RPC message: {type(e).__name__}: {e}")
             await self.on_error(e)
             raise

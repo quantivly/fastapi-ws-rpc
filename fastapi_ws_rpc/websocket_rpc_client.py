@@ -22,7 +22,11 @@ from websockets.exceptions import (
     WebSocketException,
 )
 
-from .exceptions import RpcInvalidStateError
+from .exceptions import (
+    RpcBackpressureError,
+    RpcChannelClosedError,
+    RpcInvalidStateError,
+)
 from .logger import get_logger
 from .rpc_channel import OnConnectCallback, OnDisconnectCallback, RpcChannel
 from .rpc_methods import PING_RESPONSE, RpcMethodsBase
@@ -241,16 +245,18 @@ class WebSocketRpcClient:
             Various exceptions from websockets.connect() or during initialization.
         """
         try:
+            logger.info(f"Connecting to {self.uri}...")
+
+            # Step 1: Create WebSocket connection
+            # This can raise connection-related exceptions
+            logger.debug(
+                f"Creating WebSocket connection to {self.uri} with parameters: {self.connect_kwargs}"
+            )
+            raw_ws = await websockets.connect(self.uri, **self.connect_kwargs)
+
+            # Step 2-4: Initialize RPC layer (wrap socket, create channel, register handlers)
+            # This can raise validation/initialization errors, so we wrap in try-except
             try:
-                logger.info(f"Connecting to {self.uri}...")
-
-                # Create WebSocket connection
-                logger.debug(
-                    f"Creating WebSocket connection to {self.uri} with parameters: {self.connect_kwargs}"
-                )
-                raw_ws = await websockets.connect(self.uri, **self.connect_kwargs)
-
-                # Wrap with serialization
                 logger.debug(
                     f"Wrapping WebSocket with {self._serializing_socket_cls.__name__}"
                 )
@@ -273,6 +279,15 @@ class WebSocketRpcClient:
                 self.channel.register_connect_handler(self._on_connect)
                 self.channel.register_disconnect_handler(self._on_disconnect)
 
+            except (ValidationError, ValueError, TypeError) as e:
+                # Clean up on RPC initialization errors
+                logger.error(f"RPC initialization failed: {type(e).__name__}: {e}")
+                await self._cleanup_partial_init()
+                raise
+
+            # Step 5-6: Start tasks and verify connection
+            # These use the initialized channel, so failures here need cleanup
+            try:
                 # Start reader task
                 self._read_task = asyncio.create_task(self.reader())
 
@@ -282,24 +297,25 @@ class WebSocketRpcClient:
                 # Verify RPC is responsive
                 await self.wait_on_rpc_ready()
 
-                # Reset ping failure counter on new connection
-                self._consecutive_ping_failures = 0
-
-                # Trigger connect callbacks
-                await self.channel.on_connect()
-
-                return self
-            except (
-                ValidationError,
-                ValueError,
-                TypeError,
-                RuntimeError,
-                KeyError,
-            ) as e:
-                # Clean up partial initialization on RPC setup errors
-                logger.error(f"RPC initialization failed: {type(e).__name__}: {e}")
+            except Exception as e:
+                # Clean up on post-init failures
+                logger.error(f"Connection verification failed: {type(e).__name__}: {e}")
                 await self._cleanup_partial_init()
                 raise
+
+            # Reset ping failure counter on new connection
+            self._consecutive_ping_failures = 0
+
+            # Step 7: Trigger connect callbacks
+            # This can raise exceptions from user callbacks
+            try:
+                await self.channel.on_connect()
+            except Exception as e:
+                # Log but don't fail connection if user callbacks fail
+                logger.error(f"Connect callback failed: {type(e).__name__}: {e}")
+                # We could raise here if we want strict callback handling
+
+            return self
 
         except ConnectionRefusedError:
             logger.info("RPC connection was refused by server")
@@ -573,7 +589,15 @@ class WebSocketRpcClient:
                 attempt_count += 1
                 logger.debug(f"RPC ready check timed out (attempt {attempt_count})")
 
-            except Exception as e:
+            except (
+                RpcChannelClosedError,
+                RpcBackpressureError,
+                RpcInvalidStateError,
+                ConnectionError,
+                OSError,
+            ) as e:
+                # Catch expected errors during initial connection establishment
+                # Don't catch system exceptions (KeyboardInterrupt, SystemExit, etc.)
                 logger.warning(f"RPC ready check failed: {e}")
                 attempt_count += 1
 
