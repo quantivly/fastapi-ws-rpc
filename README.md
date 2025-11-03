@@ -120,6 +120,43 @@ Websockets are ideal to create bi-directional realtime connections over the web.
  - Trigger events (see "tests/trigger_flow_test.py")
  - Node negotiations (see "tests/advanced_rpc_test.py :: test_recursive_rpc_calls")
 
+## Production Features 🚀
+
+**NEW in v1.0.0**: Built-in production hardening features:
+
+- **Message Size Limits** - Prevent DoS attacks via extremely large JSON payloads (default 10MB limit, configurable)
+- **Rate Limiting** - Control request flooding with max pending requests (default 1000, configurable)
+- **Connection Duration Limits** - Automatically close long-lived connections after max age
+- **Enhanced Keepalive** - Consecutive ping failure detection with auto-reconnect (3 failures → close)
+- **State Validation** - Proper connection state checking with meaningful error messages
+- **JSON-RPC 2.0 Compliance** - Full standard error codes and method validation
+- **Notifications** - Fire-and-forget messaging with `notify()` method
+
+### Using Production Features
+
+```python
+from fastapi_ws_rpc import WebSocketRpcEndpoint, WebSocketRpcClient
+
+# Server with production hardening
+endpoint = WebSocketRpcEndpoint(
+    methods,
+    max_message_size=5 * 1024 * 1024,  # 5MB limit
+    max_pending_requests=500,          # Limit concurrent requests
+    max_connection_duration=3600.0,    # Close after 1 hour
+)
+
+# Client with enhanced keepalive
+client = WebSocketRpcClient(
+    uri,
+    methods,
+    keep_alive=5.0,                        # Ping every 5 seconds
+    max_consecutive_ping_failures=3,       # Auto-close after 3 failures
+)
+
+# Send fire-and-forget notifications
+await channel.notify("log_event", {"level": "info", "message": "Processing..."})
+```
+
 
 ## Concepts
 - [RpcChannel](fastapi_ws_rpc/rpc_channel.py) - implements the RPC-protocol over the websocket
@@ -175,10 +212,12 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 
-**Note**: The upcoming release includes breaking changes:
-- Minimum Python version raised to 3.9+
-- Removed `requirements.txt` in favor of `pyproject.toml`
-- See CHANGELOG for full details
+**Note**: Version 1.0.0 includes breaking changes:
+- **Class renamed**: `WebsocketRPCEndpoint` → `WebSocketRpcEndpoint` (note the capitalization)
+- **Minimum Python version**: Now requires Python 3.9+ (dropped 3.7 and 3.8)
+- **Exception hierarchy**: `RpcChannelClosedError` and `RemoteValueError` now inherit from `RpcError`
+- **Removed**: `requirements.txt` (use `pyproject.toml` for dependencies)
+- See [CHANGELOG.md](CHANGELOG.md) for complete migration details
 
 ## Pull Requests Welcome! 🎉
 
