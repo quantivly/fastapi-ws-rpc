@@ -25,11 +25,11 @@ class RemoteValueError(ValueError):
     pass
 
 
-class RpcException(Exception):
+class RpcError(Exception):
     pass
 
 
-class RpcChannelClosedException(Exception):
+class RpcChannelClosedError(Exception):
     """
     Raised when the channel is closed mid-operation
     """
@@ -37,7 +37,7 @@ class RpcChannelClosedException(Exception):
     pass
 
 
-class UnknownMethodException(RpcException):
+class UnknownMethodError(RpcError):
     pass
 
 
@@ -477,7 +477,7 @@ class RpcChannel:
                 - a number - seconds to wait before timing out
         Raises:
             asyncio.exceptions.TimeoutError - on timeout
-            RpcChannelClosedException - if the channel fails before wait could
+            RpcChannelClosedError - if the channel fails before wait could
             be completed
         """
         if timeout is DEFAULT_TIMEOUT:
@@ -497,7 +497,7 @@ class RpcChannel:
         response = self.responses.get(promise.call_id, NoResponse)
         # if the channel was closed before we could finish
         if response is NoResponse:
-            raise RpcChannelClosedException(
+            raise RpcChannelClosedError(
                 f"Channel Closed before RPC response for {promise.call_id} could be received"
             )
         self.clear_saved_call(promise.call_id)
