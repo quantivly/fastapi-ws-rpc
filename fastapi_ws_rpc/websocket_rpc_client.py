@@ -9,11 +9,8 @@ import asyncio
 from contextlib import suppress
 from typing import Any
 
-import tenacity
 import websockets
 from pydantic import ValidationError
-from tenacity import retry, wait
-from tenacity.retry import retry_if_exception
 from websockets.exceptions import (
     ConnectionClosed,
     ConnectionClosedError,
@@ -23,6 +20,7 @@ from websockets.exceptions import (
 )
 
 from ._internal.rpc_keepalive import RpcKeepalive
+from ._internal.rpc_retry import RpcRetryManager
 from .exceptions import (
     RpcBackpressureError,
     RpcChannelClosedError,
@@ -34,24 +32,6 @@ from .rpc_methods import RpcMethodsBase
 from .simplewebsocket import JsonSerializingWebSocket, SimpleWebSocket
 
 logger = get_logger(__name__)
-
-
-def is_not_forbidden(value: Any) -> bool:
-    """
-    Check if the exception is not an authorization-related status code.
-
-    Args:
-        value: The exception to check.
-
-    Returns:
-        bool: True if the exception is not an authorization-related status code,
-              False otherwise.
-    """
-    return not (
-        isinstance(value, InvalidStatus)
-        and hasattr(value, "status_code")
-        and (value.status_code == 401 or value.status_code == 403)
-    )
 
 
 class WebSocketRpcClient:
@@ -68,26 +48,6 @@ class WebSocketRpcClient:
     - Automatically reconnect with exponential backoff
     - Maintain connection with keep-alive pings
     """
-
-    @staticmethod
-    def logerror(retry_state: tenacity.RetryCallState) -> None:
-        """
-        Log exception details during retry attempts.
-
-        Args:
-            retry_state: The current retry state containing exception information.
-        """
-        outcome = retry_state.outcome
-        if outcome is not None:
-            logger.exception(outcome.exception())
-
-    # Default retry configuration for connection attempts
-    DEFAULT_RETRY_CONFIG = {
-        "wait": wait.wait_random_exponential(min=0.1, max=120),
-        "retry": retry_if_exception(is_not_forbidden),
-        "reraise": True,
-        "retry_error_callback": logerror,
-    }
 
     # RPC ping check settings for verifying connection after establishment
     WAIT_FOR_INITIAL_CONNECTION = 1  # seconds
@@ -185,15 +145,8 @@ class WebSocketRpcClient:
             self._keep_alive_interval = 0
             self._max_consecutive_ping_failures = max_failures
 
-        # Process retry configuration
-        self.retry_config: dict[str, Any] | None
-        if retry_config is False:
-            self.retry_config = None  # Disable retries
-        elif retry_config is None:
-            self.retry_config = self.DEFAULT_RETRY_CONFIG  # Use defaults
-        else:
-            # Ensure it's a dict, not bool True
-            self.retry_config = retry_config if isinstance(retry_config, dict) else None
+        # Retry configuration
+        self._retry_manager = RpcRetryManager(retry_config)
 
         # Event handlers
         self._on_disconnect: list[OnDisconnectCallback] = on_disconnect or []
@@ -387,10 +340,8 @@ class WebSocketRpcClient:
         Returns:
             WebSocketRpcClient: The connected client instance.
         """
-        if self.retry_config is None:
-            return await self.__connect__()
-        connect_with_retry = retry(**self.retry_config)(self.__connect__)
-        return await connect_with_retry()  # type: ignore[no-any-return]
+        connect_with_retry = self._retry_manager.wrap(self.__connect__)
+        return await connect_with_retry()
 
     async def __aexit__(self, *args: Any, **kwargs: Any) -> None:
         """
