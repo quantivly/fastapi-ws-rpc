@@ -213,8 +213,12 @@ class RpcKeepalive:
                         f"Keepalive exceeded maximum consecutive failures "
                         f"({self._max_failures}), closing connection"
                     )
-                    # Close the connection - this will trigger cleanup
-                    await self._close_fn()
+                    # Trigger connection close in background to avoid deadlock.
+                    # We don't await here because close() will call cancel_tasks(),
+                    # which tries to cancel and await this keepalive task.
+                    # By using create_task(), we allow this task to exit immediately
+                    # while close() runs independently in the background.
+                    asyncio.create_task(self._close_fn())
                     break
 
         except asyncio.CancelledError:
