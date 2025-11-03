@@ -2,9 +2,11 @@
 Simple wrappers for websocket objects to provide a common interface.
 """
 
+from __future__ import annotations
+
 import json
 from abc import ABC, abstractmethod
-from typing import Any, Optional, TypeVar, Union
+from typing import Any, TypeVar
 
 from .logger import get_logger
 from .utils import pydantic_serialize
@@ -78,7 +80,7 @@ class JsonSerializingWebSocket(SimpleWebSocket):
                       that provides these methods.
         """
         self._websocket = websocket
-        self.messages = {
+        self.messages: dict[str, dict[str, Any]] = {
             "request_messages": {},
             "ack_messages": {},
         }
@@ -107,7 +109,7 @@ class JsonSerializingWebSocket(SimpleWebSocket):
             return json.dumps(message)
         return pydantic_serialize(message)
 
-    def _deserialize(self, buffer: Union[str, bytes]) -> Any:
+    def _deserialize(self, buffer: str | bytes) -> Any:
         """
         Deserialize a JSON message.
 
@@ -148,7 +150,7 @@ class JsonSerializingWebSocket(SimpleWebSocket):
 
         return deserialized
 
-    async def receive_text(self) -> Optional[dict]:
+    async def receive_text(self) -> dict[str, dict[str, Any]] | None:
         """
         Legacy method for compatibility.
 
