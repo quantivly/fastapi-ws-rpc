@@ -79,9 +79,7 @@ select = [
 ]
 ignore = [
     "E501",   # line too long (handled by black)
-    "N801",   # Class name should use CapWords (DEFAULT_TIMEOUT sentinel class)
-    "N802",   # Function name should be lowercase (API breaking change)
-    "N818",   # Exception name should end with Error (API breaking change)
+    "N801",   # Class name should use CapWords (DEFAULT_TIMEOUT is a sentinel)
     "PTH109", # os.getcwd() -> Path.cwd() (not critical, can fix later)
     "RUF006", # Store asyncio.create_task reference (fire-and-forget tasks)
     "RUF012", # Mutable class attributes with ClassVar (not critical, can fix later)
