@@ -22,6 +22,7 @@ from websockets.exceptions import (
     WebSocketException,
 )
 
+from ._internal.rpc_keepalive import RpcKeepalive
 from .exceptions import (
     RpcBackpressureError,
     RpcChannelClosedError,
@@ -29,7 +30,7 @@ from .exceptions import (
 )
 from .logger import get_logger
 from .rpc_channel import OnConnectCallback, OnDisconnectCallback, RpcChannel
-from .rpc_methods import PING_RESPONSE, RpcMethodsBase
+from .rpc_methods import RpcMethodsBase
 from .simplewebsocket import JsonSerializingWebSocket, SimpleWebSocket
 
 logger = get_logger(__name__)
@@ -91,7 +92,7 @@ class WebSocketRpcClient:
     # RPC ping check settings for verifying connection after establishment
     WAIT_FOR_INITIAL_CONNECTION = 1  # seconds
     MAX_CONNECTION_ATTEMPTS = 5
-    # Keep-alive failure threshold
+    # Default keep-alive failure threshold
     DEFAULT_MAX_CONSECUTIVE_PING_FAILURES = 3
 
     def __init__(
@@ -161,19 +162,28 @@ class WebSocketRpcClient:
         self.ws: SimpleWebSocket | None = None
         self.channel: RpcChannel | None = None
         self._read_task: asyncio.Task[None] | None = None
-        self._keep_alive_task: asyncio.Task[None] | None = None
         self._connection_closed = asyncio.Event()
         self._closing = False  # Flag to make close() idempotent
 
         # Configuration
-        self._keep_alive_interval = keep_alive
         self.default_response_timeout = default_response_timeout
-        self._max_consecutive_ping_failures = (
+
+        # Keep-alive configuration
+        max_failures = (
             max_consecutive_ping_failures
             if max_consecutive_ping_failures is not None
             else self.DEFAULT_MAX_CONSECUTIVE_PING_FAILURES
         )
-        self._consecutive_ping_failures = 0
+        # Create keepalive manager (will be started after connection is established)
+        # Note: ping and close functions will be bound after __init__
+        self._keepalive: RpcKeepalive | None = None
+        if keep_alive > 0:
+            # Defer creation until we have self.ping and self.close available
+            self._keep_alive_interval = keep_alive
+            self._max_consecutive_ping_failures = max_failures
+        else:
+            self._keep_alive_interval = 0
+            self._max_consecutive_ping_failures = max_failures
 
         # Process retry configuration
         self.retry_config: dict[str, Any] | None
@@ -291,8 +301,15 @@ class WebSocketRpcClient:
                 # Start reader task
                 self._read_task = asyncio.create_task(self.reader())
 
-                # Start keep-alive if enabled
-                self._start_keep_alive_task()
+                # Initialize and start keep-alive if enabled
+                if self._keep_alive_interval > 0:
+                    self._keepalive = RpcKeepalive(
+                        interval=self._keep_alive_interval,
+                        max_consecutive_failures=self._max_consecutive_ping_failures,
+                        ping_fn=self.ping,
+                        close_fn=self.close,
+                    )
+                    self._keepalive.start()
 
                 # Verify RPC is responsive
                 await self.wait_on_rpc_ready()
@@ -303,8 +320,9 @@ class WebSocketRpcClient:
                 await self._cleanup_partial_init()
                 raise
 
-            # Reset ping failure counter on new connection
-            self._consecutive_ping_failures = 0
+            # Reset keepalive failure counter on new connection
+            if self._keepalive is not None:
+                self._keepalive.reset_failures()
 
             # Step 7: Trigger connect callbacks
             # This can raise exceptions from user callbacks
@@ -431,7 +449,8 @@ class WebSocketRpcClient:
         clean shutdown without warnings about un-awaited coroutines.
         """
         # Stop keep-alive if enabled
-        await self._cancel_keep_alive_task()
+        if self._keepalive is not None:
+            await self._keepalive.stop()
 
         # Stop reader task
         await self.cancel_reader_task()
@@ -492,77 +511,6 @@ class WebSocketRpcClient:
             self._connection_closed.set()
             raise
 
-    async def _keep_alive(self) -> None:
-        """
-        Background task that sends periodic ping messages to keep the connection alive.
-
-        This task runs at the interval specified by _keep_alive_interval.
-        Tracks consecutive ping failures and closes the connection after
-        max_consecutive_ping_failures threshold is reached.
-        """
-        try:
-            while True:
-                await asyncio.sleep(self._keep_alive_interval)
-
-                try:
-                    # Send ping with timeout
-                    ping_timeout = min(self._keep_alive_interval / 2, 10.0)
-                    answer = await asyncio.wait_for(self.ping(), timeout=ping_timeout)
-
-                    # Validate response
-                    if (
-                        not answer
-                        or not hasattr(answer, "result")
-                        or answer.result != PING_RESPONSE
-                    ):
-                        self._consecutive_ping_failures += 1
-                        logger.warning(
-                            f"Keepalive ping returned unexpected response "
-                            f"(failure {self._consecutive_ping_failures}/"
-                            f"{self._max_consecutive_ping_failures}): {answer}"
-                        )
-                    else:
-                        # Success - reset failure counter
-                        if self._consecutive_ping_failures > 0:
-                            logger.debug(
-                                f"Keepalive recovered after "
-                                f"{self._consecutive_ping_failures} failures"
-                            )
-                        self._consecutive_ping_failures = 0
-                        logger.debug("Keepalive ping successful")
-
-                except asyncio.TimeoutError:
-                    self._consecutive_ping_failures += 1
-                    logger.warning(
-                        f"Keepalive ping timed out "
-                        f"(failure {self._consecutive_ping_failures}/"
-                        f"{self._max_consecutive_ping_failures})"
-                    )
-
-                except (RuntimeError, ConnectionError, ValueError) as e:
-                    self._consecutive_ping_failures += 1
-                    logger.warning(
-                        f"Keepalive ping failed with {type(e).__name__}: {e} "
-                        f"(failure {self._consecutive_ping_failures}/"
-                        f"{self._max_consecutive_ping_failures})"
-                    )
-
-                # Check if we've exceeded max consecutive failures
-                if (
-                    self._consecutive_ping_failures
-                    >= self._max_consecutive_ping_failures
-                ):
-                    logger.error(
-                        f"Keepalive exceeded maximum consecutive failures "
-                        f"({self._max_consecutive_ping_failures}), closing connection"
-                    )
-                    # Close the connection - this will trigger cleanup
-                    await self.close()
-                    break
-
-        except asyncio.CancelledError:
-            logger.debug("Keep-alive task cancelled")
-
     async def wait_on_rpc_ready(self) -> None:
         """
         Verify that the RPC channel is ready by sending test pings.
@@ -618,36 +566,6 @@ class WebSocketRpcClient:
         answer = await self.channel.other.ping()  # type: ignore[union-attr]
         logger.debug(f"Got ping response: {answer}")
         return answer
-
-    async def _cancel_keep_alive_task(self) -> None:
-        """
-        Cancel the keep-alive task if it exists and wait for cancellation to complete.
-
-        This ensures proper cleanup and prevents warnings about un-awaited
-        cancellation exceptions.
-        """
-        if self._keep_alive_task is not None:
-            logger.debug("Cancelling keep-alive task...")
-            self._keep_alive_task.cancel()
-
-            # Wait for cancellation to complete
-            with suppress(asyncio.CancelledError):
-                await self._keep_alive_task
-
-            self._keep_alive_task = None
-            logger.debug("Keep-alive task cancelled successfully")
-
-    def _start_keep_alive_task(self) -> None:
-        """
-        Start the keep-alive task if keep_alive_interval > 0.
-        """
-        if self._keep_alive_interval > 0:
-            logger.debug(
-                f"Starting keep-alive task (interval: {self._keep_alive_interval}s)"
-            )
-            self._keep_alive_task = asyncio.create_task(self._keep_alive())
-        else:
-            logger.debug("Keep-alive is disabled")
 
     async def wait_on_reader(self) -> None:
         """
