@@ -61,6 +61,7 @@ class WebSocketRpcEndpoint:
         max_message_size: int | None = None,
         max_pending_requests: int | None = None,
         max_connection_duration: float | None = None,
+        receive_timeout: float | None = None,
     ) -> None:
         """[summary]
 
@@ -81,6 +82,10 @@ class WebSocketRpcEndpoint:
             max_connection_duration (float, optional): Maximum time in seconds that connections
                                                       can remain open. After this time, connections
                                                       will be gracefully closed. None means no limit.
+            receive_timeout (float, optional): Timeout in seconds for receiving messages.
+                                             If no message is received within this time, the connection
+                                             is closed to prevent zombie connections. None means no timeout.
+                                             Recommended: 300-600 seconds for most applications.
         """
         self.manager = manager if manager is not None else ConnectionManager()
         self.methods = methods if methods is not None else RpcMethodsBase()
@@ -93,6 +98,7 @@ class WebSocketRpcEndpoint:
         self._max_message_size = max_message_size
         self._max_pending_requests = max_pending_requests
         self._max_connection_duration = max_connection_duration
+        self._receive_timeout = receive_timeout
 
     async def main_loop(
         self, websocket: WebSocket, client_id: str | None = None, **kwargs: Any
@@ -125,8 +131,21 @@ class WebSocketRpcEndpoint:
             await channel.on_connect()
             try:
                 while True:
-                    data = await simple_websocket.recv()
+                    # Apply receive timeout if configured to prevent zombie connections
+                    if self._receive_timeout is not None:
+                        data = await asyncio.wait_for(
+                            simple_websocket.recv(), timeout=self._receive_timeout
+                        )
+                    else:
+                        data = await simple_websocket.recv()
                     await channel.on_message(data)
+            except asyncio.TimeoutError:
+                client_port = websocket.client.port if websocket.client else "unknown"
+                logger.info(
+                    f"Connection timeout - no message received within {self._receive_timeout}s "
+                    f"- {client_port} :: {channel.id}"
+                )
+                await self.handle_disconnect(websocket, channel)
             except WebSocketDisconnect:
                 client_port = websocket.client.port if websocket.client else "unknown"
                 logger.info(f"Client disconnected - {client_port} :: {channel.id}")

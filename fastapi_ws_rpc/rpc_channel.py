@@ -165,6 +165,22 @@ class RpcChannel:
         return await self.socket.recv()
 
     async def close(self) -> Any:
+        """
+        Close the RPC channel and clean up resources.
+
+        This method is idempotent and can be safely called multiple times.
+        Subsequent calls after the first will be no-ops.
+
+        Returns:
+            Result from closing the underlying socket
+        """
+        # Make this method idempotent - return immediately if already closed
+        if self.is_closed():
+            logger.debug(f"Channel {self.id} already closed, skipping")
+            return None
+
+        logger.debug(f"Closing channel {self.id}...")
+
         # Cancel duration watchdog if running
         if self._duration_watchdog_task is not None:
             self._duration_watchdog_task.cancel()
@@ -172,11 +188,12 @@ class RpcChannel:
                 await self._duration_watchdog_task
             self._duration_watchdog_task = None
 
-        # Delegate cleanup to promise manager
+        # Delegate cleanup to promise manager (this sets the closed flag)
         self._promise_manager.close()
 
         # Close the underlying socket
         res = await self.socket.close()
+        logger.debug(f"Channel {self.id} closed successfully")
         return res
 
     def is_closed(self) -> bool:
@@ -296,6 +313,17 @@ class RpcChannel:
         return self._other_channel_id
 
     async def on_disconnect(self) -> None:
+        """
+        Handle channel disconnection.
+
+        This method is idempotent - disconnect handlers are only called once.
+        Subsequent calls will be no-ops.
+        """
+        # Check if already closed to prevent double-calling disconnect handlers
+        if self.is_closed():
+            logger.debug(f"Channel {self.id} already disconnected, skipping handlers")
+            return
+
         # disconnect happened - mark the channel as closed
         self._promise_manager.close()
         await self.on_handler_event(self._disconnect_handlers, self)
