@@ -65,7 +65,9 @@ class LoggingConfig:
                 os.environ.get(ENV_VAR, "").upper(), LoggingModes.SIMPLE
             )
             self.set_mode(mode)
-        assert self._mode is not None  # Ensured by set_mode
+        # Runtime check to protect against -O optimization flag that disables assertions
+        if self._mode is None:
+            raise RuntimeError("Logging mode must be set by set_mode() method")
         return self._mode
 
     def set_mode(

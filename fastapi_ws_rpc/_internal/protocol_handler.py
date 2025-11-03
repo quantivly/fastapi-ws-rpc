@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from ..exceptions import RpcInvalidStateError
 from ..logger import get_logger
 from ..rpc_methods import NoResponse
 from ..schemas import JsonRpcError, JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse
@@ -122,10 +123,15 @@ class RpcProtocolHandler:
         )
         if not is_valid:
             # When method is invalid, error_code and error_msg are guaranteed to be non-None
-            assert (
-                error_code is not None
-            ), "error_code must be set when is_valid is False"
-            assert error_msg is not None, "error_msg must be set when is_valid is False"
+            # These runtime checks protect against -O optimization flag that disables assertions
+            if error_code is None:
+                raise RpcInvalidStateError(
+                    "error_code must be set when is_valid is False"
+                )
+            if error_msg is None:
+                raise RpcInvalidStateError(
+                    "error_msg must be set when is_valid is False"
+                )
             if request.id is not None:
                 await self.send_error(request.id, error_code, error_msg)
             return
@@ -145,7 +151,14 @@ class RpcProtocolHandler:
 
         except TypeError as exc:
             # Invalid parameters (wrong arguments, missing required args, etc.)
-            logger.exception(f"Invalid parameters for method '{method_name}': {exc}")
+            logger.exception(
+                f"Invalid parameters for method '{method_name}': {exc}",
+                extra={
+                    "method": method_name,
+                    "request_id": request.id,
+                    "error_type": "TypeError",
+                },
+            )
             if request.id is not None:
                 await self.send_error(
                     request.id,
@@ -159,7 +172,15 @@ class RpcProtocolHandler:
             # execution must be converted to a JSON-RPC error response.
             # This is intentionally broad to handle all application errors.
             # System exceptions (KeyboardInterrupt, SystemExit) are not caught.
-            logger.exception(f"Failed to execute method '{method_name}': {exc}")
+            logger.exception(
+                f"Failed to execute method '{method_name}': {exc}",
+                extra={
+                    "method": method_name,
+                    "request_id": request.id,
+                    "error_type": type(exc).__name__,
+                    "error_module": type(exc).__module__,
+                },
+            )
             if request.id is not None:
                 await self.send_error(
                     request.id,

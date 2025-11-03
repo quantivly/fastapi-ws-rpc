@@ -307,11 +307,9 @@ class TestConnectionTimeouts:
 
         Verifies that:
         - Timeout is respected
-        - RpcChannelClosedError is raised when response is None after timeout
+        - asyncio.TimeoutError is raised when timeout expires and channel is still open
         - Promise remains pending after timeout
-
-        Note: Implementation raises RpcChannelClosedError for both channel
-        closure and timeout scenarios where response is None.
+        - Call ID is included in error message for traceability
         """
         request = JsonRpcRequest(
             jsonrpc="2.0",
@@ -321,8 +319,11 @@ class TestConnectionTimeouts:
         promise = promise_manager.create_promise(request)
 
         # Wait with short timeout, no response will arrive
-        with pytest.raises(RpcChannelClosedError):
+        with pytest.raises(asyncio.TimeoutError) as exc_info:
             await promise_manager.wait_for_response(promise, timeout=0.1)
+
+        # Verify call ID is in error message
+        assert "timeout-req" in str(exc_info.value)
 
         # Promise should still be pending
         assert promise_manager.get_pending_count() == 1
@@ -337,6 +338,7 @@ class TestConnectionTimeouts:
         Verifies that:
         - Timed-out promises can be cleaned up
         - System continues to function after timeouts
+        - asyncio.TimeoutError is raised for each timeout
         """
         # Create multiple requests that will timeout
         promises = []
@@ -351,7 +353,7 @@ class TestConnectionTimeouts:
 
         # Wait for all to timeout
         for promise in promises:
-            with pytest.raises(RpcChannelClosedError):
+            with pytest.raises(asyncio.TimeoutError):
                 await promise_manager.wait_for_response(promise, timeout=0.05)
 
         # All should still be pending (cleanup would happen via TTL)

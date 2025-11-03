@@ -8,6 +8,7 @@ response matching, and cleanup on channel closure.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import TYPE_CHECKING
 
@@ -294,11 +295,18 @@ class RpcPromiseManager:
         call_id = promise.call_id
         response = self._responses.get(call_id)
 
-        # If the channel was closed before we could finish
+        # Distinguish between timeout and channel closure
         if response is None:
-            raise RpcChannelClosedError(
-                f"Channel Closed before RPC response for {call_id} could be received"
-            )
+            if self.is_closed():
+                # Channel was actually closed - connection lost
+                raise RpcChannelClosedError(
+                    f"Channel closed before response for call {call_id} could be received"
+                )
+            else:
+                # Timeout expired but channel is still open
+                raise asyncio.TimeoutError(
+                    f"Timeout waiting for response to call {call_id}"
+                )
 
         # Clean up the promise regardless of success or failure
         self.clear_saved_call(call_id)
@@ -356,11 +364,27 @@ class RpcPromiseManager:
 
         except asyncio.CancelledError:
             logger.debug("Promise cleanup task cancelled")
+        except (RuntimeError, ValueError, TypeError, KeyError, AttributeError) as e:
+            # Expected exceptions from cleanup operations - log and continue
+            # These can occur during dict iteration/modification or state checks
+            logger.error(
+                f"Expected error in periodic promise cleanup: {type(e).__name__}: {e}",
+                exc_info=True,
+            )
         except Exception as e:
-            # Safety net for background task - prevent cleanup task from crashing
-            # This is intentionally broad to ensure cleanup continues despite errors
-            # System exceptions (KeyboardInterrupt, SystemExit) are not caught
-            logger.error(f"Error in periodic promise cleanup: {e}", exc_info=True)
+            # Unexpected exception - log as critical and re-raise in development
+            # This helps catch bugs during development while maintaining production stability
+            logger.critical(
+                f"Unexpected error in periodic promise cleanup: {type(e).__name__}: {e}",
+                exc_info=True,
+                extra={
+                    "pending_count": len(self._requests),
+                    "is_closed": self._closed.is_set(),
+                },
+            )
+            # Re-raise in development mode to surface unexpected errors
+            if os.environ.get("ENV") == "development":
+                raise
 
     def close(self) -> None:
         """

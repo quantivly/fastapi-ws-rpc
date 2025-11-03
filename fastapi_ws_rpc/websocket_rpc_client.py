@@ -124,6 +124,8 @@ class WebSocketRpcClient:
         self._read_task: asyncio.Task[None] | None = None
         self._connection_closed = asyncio.Event()
         self._closing = False  # Flag to make close() idempotent
+        self._close_code: int | None = None  # WebSocket close code
+        self._close_reason: str | None = None  # WebSocket close reason
 
         # Configuration
         self.default_response_timeout = default_response_timeout
@@ -458,8 +460,11 @@ class WebSocketRpcClient:
         self._validate_connected()
 
         # After validation, ws and channel are guaranteed to be non-None
-        assert self.ws is not None, "WebSocket must be connected"
-        assert self.channel is not None, "Channel must be initialized"
+        # These runtime checks protect against -O optimization flag that disables assertions
+        if self.ws is None:
+            raise RpcInvalidStateError("WebSocket must be connected")
+        if self.channel is None:
+            raise RpcInvalidStateError("Channel must be initialized")
 
         try:
             # Main reader loop - continuously read and process messages
@@ -475,10 +480,25 @@ class WebSocketRpcClient:
             logger.info("RPC read task was cancelled.")
             self._connection_closed.set()
 
-        except ConnectionClosed:
+        except ConnectionClosed as e:
             # WebSocket connection lost (server closed, network error, etc.)
+            # Extract close code and reason for diagnostics
+            # The ConnectionClosed exception may have rcvd attribute with Close object
+            close_info = getattr(e, "rcvd", None)
+            if close_info is not None:
+                self._close_code = getattr(close_info, "code", None)
+                self._close_reason = getattr(close_info, "reason", None)
+
+            # Log with close code and reason for better debugging
+            if self._close_code is not None:
+                logger.info(
+                    f"Connection was terminated. Close code: {self._close_code}, "
+                    f"reason: {self._close_reason or '(no reason provided)'}"
+                )
+            else:
+                logger.info("Connection was terminated.")
+
             # Signal closed state and trigger full cleanup
-            logger.info("Connection was terminated.")
             self._connection_closed.set()
             await self.close()
 
@@ -650,3 +670,29 @@ class WebSocketRpcClient:
             asyncio.Event: Event that will be set when the connection closes.
         """
         return self._connection_closed
+
+    @property
+    def close_code(self) -> int | None:
+        """
+        WebSocket close code from the last connection closure.
+
+        Returns:
+            int | None: The close code if available, None otherwise.
+                       Common codes include:
+                       - 1000: Normal closure
+                       - 1001: Going away
+                       - 1002: Protocol error
+                       - 1003: Unsupported data
+                       - 1006: Abnormal closure (no close frame received)
+        """
+        return self._close_code
+
+    @property
+    def close_reason(self) -> str | None:
+        """
+        WebSocket close reason from the last connection closure.
+
+        Returns:
+            str | None: The close reason string if available, None otherwise.
+        """
+        return self._close_reason

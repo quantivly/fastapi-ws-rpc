@@ -271,16 +271,17 @@ class TestPromiseWaitOperations:
         Test waiting for a response that times out.
 
         Verifies that:
-        - RpcChannelClosedError is raised when timeout expires (response is None)
+        - asyncio.TimeoutError is raised when timeout expires
         - Promise remains in pending state (not cleaned up on timeout from wait)
-
-        Note: The implementation raises RpcChannelClosedError for both actual
-        channel closure and timeout scenarios where response is None.
+        - Call ID is included in error message for traceability
         """
         promise = promise_manager.create_promise(sample_request)
 
-        with pytest.raises(RpcChannelClosedError):
+        with pytest.raises(asyncio.TimeoutError) as exc_info:
             await promise_manager.wait_for_response(promise, timeout=0.1)
+
+        # Verify call ID is in error message
+        assert "test-request-1" in str(exc_info.value)
 
         # Promise should still be pending (not cleaned up on timeout)
         assert promise_manager.get_pending_count() == 1

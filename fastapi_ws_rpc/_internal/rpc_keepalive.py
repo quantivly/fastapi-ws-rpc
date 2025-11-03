@@ -218,7 +218,7 @@ class RpcKeepalive:
                     # which tries to cancel and await this keepalive task.
                     # By using create_task(), we allow this task to exit immediately
                     # while close() runs independently in the background.
-                    asyncio.create_task(self._close_fn())
+                    asyncio.create_task(self._close_fn())  # type: ignore[arg-type]
                     break
 
         except asyncio.CancelledError:
