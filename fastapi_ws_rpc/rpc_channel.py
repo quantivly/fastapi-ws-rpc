@@ -254,7 +254,7 @@ class RpcChannel:
         self._closed.set()
         return res
 
-    def isClosed(self):
+    def is_closed(self):
         return self._closed.is_set()
 
     async def wait_until_closed(self):

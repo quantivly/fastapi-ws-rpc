@@ -303,7 +303,7 @@ class WebSocketRpcClient:
                 await self.ws.close()
 
         # Notify callbacks (but just once)
-        if self.channel and not self.channel.isClosed():
+        if self.channel and not self.channel.is_closed():
             try:
                 # Notify handlers
                 await self.channel.on_disconnect()
@@ -505,7 +505,7 @@ class WebSocketRpcClient:
             self.ws is not None
             and not getattr(self.ws, "closed", False)
             and self.channel is not None
-            and not self.channel.isClosed()
+            and not self.channel.is_closed()
             and self._read_task is not None
             and not self._read_task.done()
         )
