@@ -68,7 +68,7 @@ class RpcKeepalive:
     keepalive.start()
     ```
 
-    RPC ping mode (legacy/fallback):
+    RPC ping mode (fallback):
     ```python
     keepalive = RpcKeepalive(
         interval=30.0,
@@ -258,7 +258,7 @@ class RpcKeepalive:
                         # This is 80-90% more efficient than RPC pings
                         await self._send_protocol_ping()
                     elif self._ping_fn is not None:
-                        # RPC ping mode (legacy) - sends JSON-RPC ping method call
+                        # RPC ping mode (fallback) - sends JSON-RPC ping method call
                         ping_timeout = min(self._interval / 2, 10.0)
                         answer = await asyncio.wait_for(
                             self._ping_fn(), timeout=ping_timeout

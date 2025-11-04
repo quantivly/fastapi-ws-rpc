@@ -32,7 +32,9 @@ from .rpc_channel import OnConnectCallback, OnDisconnectCallback, RpcChannel
 from .rpc_methods import RpcMethodsBase
 from .simplewebsocket import JsonSerializingWebSocket, SimpleWebSocket
 
-# Type alias for error callbacks (will be used in future error handling refactor)
+# Type alias for error callbacks
+# Note: WebSocketRpcClient maps on_error to on_disconnect for simplicity.
+# For granular error handling, use RpcChannel directly with error_callbacks.
 OnErrorCallback = OnDisconnectCallback
 
 logger = get_logger(__name__)
@@ -161,7 +163,8 @@ class WebSocketRpcClient:
         # Event handlers
         self._on_disconnect: list[OnDisconnectCallback] = on_disconnect or []
         self._on_connect: list[OnConnectCallback] = on_connect or []
-        # on_error currently maps to on_disconnect (will be used in future error handling refactor)
+        # on_error callbacks are added to on_disconnect list (unified error/disconnect handling)
+        # For separate error handling, use RpcChannel.error_callbacks directly
         if on_error:
             self._on_disconnect.extend(on_error)
 

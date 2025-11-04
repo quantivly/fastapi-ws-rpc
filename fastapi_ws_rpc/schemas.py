@@ -267,9 +267,6 @@ class JsonRpcResponse(BaseModel):
 ResponseT = TypeVar("ResponseT")
 
 
-# Legacy classes removed - using JSON-RPC 2.0 only
-
-
 class WebSocketFrameType(str, Enum):
     """
     WebSocket frame type for message transmission.

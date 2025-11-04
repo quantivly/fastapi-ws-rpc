@@ -129,9 +129,8 @@ class RpcChannel:
         self._channel_id_synced = asyncio.Event()
         # Store negotiated WebSocket subprotocol for runtime checks
         self.subprotocol = subprotocol
-        #
-        # convenience caller
-        # TODO - pass remote methods object to support validation before call
+        # Convenience caller provides dynamic proxy access to remote methods
+        # No validation is performed (remote schema is unknown)
         self.other = RpcCaller(self)
 
         # Log subprotocol if present
