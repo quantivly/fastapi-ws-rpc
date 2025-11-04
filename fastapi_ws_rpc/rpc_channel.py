@@ -260,8 +260,17 @@ class RpcChannel:
                     f"messages pending. Slow down sending or increase max_send_queue_size."
                 )
 
-            # Acquire semaphore and increment counter
-            await self._send_semaphore.acquire()
+            # Acquire semaphore with timeout to prevent deadlocks
+            # Use a short timeout (1s) to fail fast if backpressure race occurs
+            try:
+                await asyncio.wait_for(self._send_semaphore.acquire(), timeout=1.0)
+            except asyncio.TimeoutError as e:
+                # Semaphore acquisition timed out - queue likely full due to race condition
+                raise RpcBackpressureError(
+                    f"Send queue backpressure timeout: unable to acquire send slot within 1s. "
+                    f"Current pending: {self._pending_sends}/{self._max_send_queue_size}"
+                ) from e
+
             self._pending_sends += 1
 
             try:

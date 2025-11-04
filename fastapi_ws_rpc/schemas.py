@@ -88,20 +88,21 @@ class JsonRpcRequest(BaseModel):
         method: Name of the method to call
         params: Method parameters. Can be:
             - dict: Named parameters - passed as **kwargs to method
+            - list: Positional parameters - passed as *args to method (mapped to parameter names)
             - None: No parameters
 
     Note on Parameters:
-        This implementation supports named parameters only (dict format).
-        Positional parameters (list format) are not supported and will be
-        rejected with a ValueError during parameter conversion.
+        This implementation supports both parameter formats per JSON-RPC 2.0 spec:
+        - Named parameters (dict): {"name": "value"} → passed as kwargs
+        - Positional parameters (list): [value1, value2] → mapped to parameter names by position
 
-        Always use named parameters (dict) for compatibility.
+        Both formats are fully supported for JSON-RPC 2.0 spec compliance.
     """
 
     jsonrpc: str = "2.0"
     id: Optional[Union[str, int]] = None
     method: str
-    params: Optional[dict[str, Any]] = None
+    params: Optional[Union[dict[str, Any], list[Any]]] = None
 
     @field_validator("id")
     @classmethod

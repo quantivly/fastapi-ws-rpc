@@ -661,6 +661,9 @@ class WebSocketRpcClientConfig:
                 default_response_timeout=30.0,
                 max_connection_duration=3600.0,  # 1 hour
                 idle_timeout=300.0,  # 5 minutes
+                websocket=WebSocketConnectionConfig(
+                    ping_timeout=60.0,  # 2x the keepalive interval to prevent false timeouts
+                ),
             ),
             backpressure=RpcBackpressureConfig(
                 max_pending_requests=500,

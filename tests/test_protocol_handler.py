@@ -269,29 +269,34 @@ class TestRequestHandling:
         assert "invalid parameters" in sent_data["error"]["message"].lower()
 
     @pytest.mark.asyncio
-    async def test_handle_request_positional_params_rejected(
+    async def test_handle_request_positional_params_accepted(
         self, protocol_handler: RpcProtocolHandler, mock_send: AsyncMock
     ) -> None:
         """
         Test handling request with positional parameters (array format).
 
         Verifies that:
-        - Positional parameters (list/array format) are rejected
-        - Error response is sent with INVALID_PARAMS code
-        - Error message indicates positional params are not supported
+        - Positional parameters (list/array format) are now supported
+        - Parameters are mapped to method parameters by position
+        - Response is sent with correct result
         """
-        # Note: Since JsonRpcRequest now only accepts dict params, we need to
-        # test positional param rejection at the method_invoker level
-        # Manually call convert_params with list to test rejection
-        # This simulates what would happen if a list somehow got through
-        import pytest
+        request = JsonRpcRequest(
+            jsonrpc="2.0",
+            id="req-pos-1",
+            method="add",
+            params=[5, 3],  # Positional params: a=5, b=3
+        )
 
-        with pytest.raises(ValueError) as exc_info:
-            protocol_handler._method_invoker.convert_params([1, 2, 3])
+        await protocol_handler.handle_request(request)
 
-        error_msg = str(exc_info.value).lower()
-        assert "positional parameters" in error_msg
-        assert "not supported" in error_msg
+        # Verify response was sent with correct result
+        mock_send.assert_called_once()
+        sent_data = mock_send.call_args[0][0]
+
+        assert sent_data["jsonrpc"] == "2.0"
+        assert sent_data["id"] == "req-pos-1"
+        assert sent_data["result"] == 8
+        assert "error" not in sent_data
 
     @pytest.mark.asyncio
     async def test_handle_request_method_raises_exception(

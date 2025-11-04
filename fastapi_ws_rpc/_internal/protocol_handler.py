@@ -154,11 +154,13 @@ class RpcProtocolHandler:
             return
 
         # Convert and validate parameters first
-        # This catches ValueError from unsupported parameter formats (e.g., positional params)
+        # This catches ValueError from invalid parameter formats (e.g., wrong count, keyword-only params)
         try:
-            arguments = self._method_invoker.convert_params(request.params)
+            arguments = self._method_invoker.convert_params(
+                request.params, method_name=method_name
+            )
         except ValueError as exc:
-            # Parameter format error (e.g., positional params not supported)
+            # Parameter format error (e.g., wrong param count, keyword-only params with positional args)
             logger.exception(
                 f"Invalid parameter format for method '{method_name}': {exc}",
                 extra={

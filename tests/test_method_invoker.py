@@ -46,6 +46,16 @@ class InvokerTestMethods(RpcMethodsBase):
         """Method with keyword arguments and defaults."""
         return {"name": name, "value": value}
 
+    async def method_with_mixed_params(
+        self, required: str, optional: int = 100
+    ) -> dict:
+        """Method with required and optional parameters."""
+        return {"required": required, "optional": optional}
+
+    async def method_with_keyword_only(self, a: int, *, b: int) -> int:
+        """Method with keyword-only parameters (after * separator)."""
+        return a + b
+
     async def method_that_raises_type_error(self, x: int) -> int:
         """Method that expects specific parameter types."""
         # This will raise TypeError if x is not an int
@@ -249,26 +259,144 @@ class TestParameterConversion:
         assert isinstance(result, dict)
 
     @pytest.mark.asyncio
-    async def test_convert_list_params_raises_error(
+    async def test_convert_list_params_basic(
         self, method_invoker: RpcMethodInvoker
     ) -> None:
         """
-        Test that list parameters raise ValueError.
+        Test converting list parameters (positional params) to named params.
 
         Verifies that:
-        - List params are not supported
-        - Clear error message is provided
-        - ValueError is raised with appropriate message
+        - List params are mapped to parameter names by position
+        - Result is a dict suitable for **kwargs
+        - Requires method_name for signature inspection
         """
-        params = [1, 2, 3]
+        params = [5, 3]
+        result = method_invoker.convert_params(params, method_name="method_with_params")
+
+        assert result == {"a": 5, "b": 3}
+        assert isinstance(result, dict)
+
+    @pytest.mark.asyncio
+    async def test_convert_list_params_with_defaults(
+        self, method_invoker: RpcMethodInvoker
+    ) -> None:
+        """
+        Test converting list parameters when method has default values.
+
+        Verifies that:
+        - Partial list can be provided when params have defaults
+        - Only provided values are mapped
+        - Default values are used for omitted params
+        """
+        # Provide only required param, optional uses default
+        params = ["test"]
+        result = method_invoker.convert_params(
+            params, method_name="method_with_mixed_params"
+        )
+
+        assert result == {"required": "test"}
+        assert isinstance(result, dict)
+
+    @pytest.mark.asyncio
+    async def test_convert_list_params_without_method_name(
+        self, method_invoker: RpcMethodInvoker
+    ) -> None:
+        """
+        Test that list params without method_name raises ValueError.
+
+        Verifies that:
+        - List params require method_name for signature inspection
+        - Clear error message is provided
+        """
+        params = [1, 2]
 
         with pytest.raises(ValueError) as exc_info:
             method_invoker.convert_params(params)
 
         error_message = str(exc_info.value).lower()
-        assert "positional parameters" in error_message
-        assert "not supported" in error_message
-        assert "array format" in error_message
+        assert "cannot convert positional parameters" in error_message
+        assert "method name" in error_message
+
+    @pytest.mark.asyncio
+    async def test_convert_list_params_too_many(
+        self, method_invoker: RpcMethodInvoker
+    ) -> None:
+        """
+        Test that too many positional params raises ValueError.
+
+        Verifies that:
+        - Providing more params than method accepts raises error
+        - Error message is clear about the issue
+        """
+        # method_with_params expects 2 params, we provide 3
+        params = [1, 2, 3]
+
+        with pytest.raises(ValueError) as exc_info:
+            method_invoker.convert_params(params, method_name="method_with_params")
+
+        error_message = str(exc_info.value).lower()
+        assert "too many" in error_message
+        assert "expected at most 2" in error_message
+
+    @pytest.mark.asyncio
+    async def test_convert_list_params_too_few(
+        self, method_invoker: RpcMethodInvoker
+    ) -> None:
+        """
+        Test that too few positional params raises ValueError.
+
+        Verifies that:
+        - Providing fewer params than required raises error
+        - Error message is clear about the issue
+        """
+        # method_with_params expects 2 params (both required), we provide 1
+        params = [1]
+
+        with pytest.raises(ValueError) as exc_info:
+            method_invoker.convert_params(params, method_name="method_with_params")
+
+        error_message = str(exc_info.value).lower()
+        assert "too few" in error_message
+        assert "expected at least 2" in error_message
+
+    @pytest.mark.asyncio
+    async def test_convert_list_params_keyword_only_method(
+        self, method_invoker: RpcMethodInvoker
+    ) -> None:
+        """
+        Test that positional params fail for methods with keyword-only params.
+
+        Verifies that:
+        - Methods with keyword-only params (after *) cannot use positional params
+        - Clear error message is provided
+        """
+        params = [1, 2]
+
+        with pytest.raises(ValueError) as exc_info:
+            method_invoker.convert_params(
+                params, method_name="method_with_keyword_only"
+            )
+
+        error_message = str(exc_info.value).lower()
+        assert "keyword-only" in error_message
+        assert "cannot be called with positional parameters" in error_message
+
+    @pytest.mark.asyncio
+    async def test_convert_empty_list_params(
+        self, method_invoker: RpcMethodInvoker
+    ) -> None:
+        """
+        Test converting empty list parameters.
+
+        Verifies that:
+        - Empty list is handled correctly for methods with no params
+        - Result is empty dict
+        """
+        params = []
+        result = method_invoker.convert_params(params, method_name="simple_method")
+
+        assert result == {}
+        assert isinstance(result, dict)
 
     @pytest.mark.asyncio
     async def test_convert_none_params(self, method_invoker: RpcMethodInvoker) -> None:
@@ -454,6 +582,85 @@ class TestMethodInvocation:
         # are not awaitable. This test documents the limitation.
         with pytest.raises(TypeError):
             await method_invoker.invoke("sync_method", None)
+
+    @pytest.mark.asyncio
+    async def test_invoke_method_with_list_params(
+        self, method_invoker: RpcMethodInvoker
+    ) -> None:
+        """
+        Test invoking method with list parameters (positional params).
+
+        Verifies that:
+        - Positional parameters are mapped correctly to method params
+        - Method executes with correct arguments
+        - Return value is correct
+        """
+        result = await method_invoker.invoke("method_with_params", [5, 3])
+
+        assert result == 8
+
+    @pytest.mark.asyncio
+    async def test_invoke_method_with_partial_list_params(
+        self, method_invoker: RpcMethodInvoker
+    ) -> None:
+        """
+        Test invoking method with partial list params (uses defaults).
+
+        Verifies that:
+        - Partial positional params work when method has defaults
+        - Default values are used for omitted params
+        """
+        result = await method_invoker.invoke(
+            "method_with_mixed_params", ["required_value"]
+        )
+
+        assert result == {"required": "required_value", "optional": 100}
+
+    @pytest.mark.asyncio
+    async def test_invoke_method_with_full_list_params(
+        self, method_invoker: RpcMethodInvoker
+    ) -> None:
+        """
+        Test invoking method with full list params (all params provided).
+
+        Verifies that:
+        - All positional params are mapped correctly
+        - Defaults are overridden
+        """
+        result = await method_invoker.invoke("method_with_mixed_params", ["test", 42])
+
+        assert result == {"required": "test", "optional": 42}
+
+    @pytest.mark.asyncio
+    async def test_invoke_method_with_empty_list_params(
+        self, method_invoker: RpcMethodInvoker
+    ) -> None:
+        """
+        Test invoking method with empty list params.
+
+        Verifies that:
+        - Empty list works for methods with no params
+        """
+        result = await method_invoker.invoke("simple_method", [])
+
+        assert result == "success"
+
+    @pytest.mark.asyncio
+    async def test_invoke_keyword_only_method_with_list_params_fails(
+        self, method_invoker: RpcMethodInvoker
+    ) -> None:
+        """
+        Test that invoking keyword-only method with list params fails.
+
+        Verifies that:
+        - Methods with keyword-only params cannot be called with positional params
+        - ValueError is raised with clear message
+        """
+        with pytest.raises(ValueError) as exc_info:
+            await method_invoker.invoke("method_with_keyword_only", [1, 2])
+
+        error_message = str(exc_info.value).lower()
+        assert "keyword-only" in error_message
 
 
 # ============================================================================
