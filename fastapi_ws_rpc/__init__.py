@@ -14,8 +14,10 @@ from fastapi_ws_rpc._internal.protocols import SocketProtocol
 from fastapi_ws_rpc.config import (
     RpcBackpressureConfig,
     RpcConnectionConfig,
+    RpcDebugConfig,
     RpcKeepaliveConfig,
     RpcRetryConfig,
+    WebSocketConnectionConfig,
     WebSocketRpcClientConfig,
 )
 from fastapi_ws_rpc.connection_manager import ConnectionManager
@@ -80,6 +82,7 @@ __all__ = [
     "RpcChannel",
     "RpcChannelClosedError",
     "RpcConnectionConfig",
+    "RpcDebugConfig",
     "RpcError",
     "RpcInvalidStateError",
     "RpcKeepaliveConfig",
@@ -90,6 +93,7 @@ __all__ = [
     "SimpleWebSocket",
     "SocketProtocol",
     "UnknownMethodError",
+    "WebSocketConnectionConfig",
     "WebSocketFrameType",
     "WebSocketRpcClient",
     "WebSocketRpcClientConfig",

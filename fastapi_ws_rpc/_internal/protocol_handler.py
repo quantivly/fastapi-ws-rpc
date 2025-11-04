@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from ..config import RpcDebugConfig
 from ..exceptions import RpcInvalidStateError
 from ..logger import get_logger
 from ..rpc_methods import NoResponse
@@ -42,6 +43,7 @@ class RpcProtocolHandler:
         method_invoker: RpcMethodInvoker,
         promise_manager: RpcPromiseManager,
         send_callback: Callable[[dict[str, Any]], Awaitable[None]],
+        debug_config: RpcDebugConfig | None = None,
     ) -> None:
         """
         Initialize the protocol handler.
@@ -50,10 +52,13 @@ class RpcProtocolHandler:
             method_invoker: Component for validating and invoking methods
             promise_manager: Component for managing request/response promises
             send_callback: Async function to send messages (usually channel.send_raw)
+            debug_config: Configuration for error disclosure. If None, defaults to
+                         production-safe mode (debug_mode=False).
         """
         self._method_invoker = method_invoker
         self._promise_manager = promise_manager
         self._send = send_callback
+        self._debug_config = debug_config or RpcDebugConfig()
 
     async def handle_message(self, data: dict[str, Any]) -> None:
         """
@@ -215,6 +220,8 @@ class RpcProtocolHandler:
             # execution must be converted to a JSON-RPC error response.
             # This is intentionally broad to handle all application errors.
             # System exceptions (KeyboardInterrupt, SystemExit) are not caught.
+
+            # Log full error details server-side (always, regardless of debug mode)
             logger.exception(
                 f"Failed to execute method '{method_name}': {exc}",
                 extra={
@@ -224,12 +231,23 @@ class RpcProtocolHandler:
                     "error_module": type(exc).__module__,
                 },
             )
+
+            # Send sanitized or full error to client based on debug mode
             if request.id is not None:
+                if self._debug_config.debug_mode:
+                    # Debug mode: send full error details
+                    error_msg = f"Internal error: {exc!s}"
+                    error_data = {"type": type(exc).__name__, "method": method_name}
+                else:
+                    # Production mode: sanitized generic error
+                    error_msg = "Internal server error"
+                    error_data = None
+
                 await self.send_error(
                     request.id,
                     JsonRpcErrorCode.INTERNAL_ERROR,
-                    f"Internal error: {exc!s}",
-                    {"type": type(exc).__name__, "method": method_name},
+                    error_msg,
+                    error_data,
                 )
 
     async def handle_response(self, response: JsonRpcResponse) -> None:

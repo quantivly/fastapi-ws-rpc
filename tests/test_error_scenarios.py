@@ -14,6 +14,7 @@ This test module covers:
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -837,3 +838,249 @@ class TestEdgeCases:
         # Should still be closed
         await asyncio.sleep(0.1)
         assert promise_manager.is_closed()
+
+
+# ============================================================================
+# Error Information Disclosure Tests (Security)
+# ============================================================================
+
+
+class TestErrorDisclosure:
+    """Test error information disclosure protection for security."""
+
+    @pytest.mark.asyncio
+    async def test_production_mode_sanitizes_errors(
+        self, method_invoker: RpcMethodInvoker, promise_manager: RpcPromiseManager
+    ) -> None:
+        """
+        Test that production mode (debug_mode=False) sanitizes error details.
+
+        Verifies that:
+        - Generic error message is sent to client
+        - No exception type or method name is disclosed
+        - Error data is None (no sensitive information)
+        - Error code is INTERNAL_ERROR
+        """
+        from fastapi_ws_rpc.config import RpcDebugConfig
+
+        mock_send = AsyncMock()
+
+        # Create protocol handler with production mode (default)
+        handler = RpcProtocolHandler(
+            method_invoker, promise_manager, mock_send, debug_config=RpcDebugConfig()
+        )
+
+        # Call a method that will fail
+        message = {
+            "jsonrpc": "2.0",
+            "id": "test-req",
+            "method": "failing_method",
+        }
+
+        await handler.handle_message(message)
+
+        # Verify error response was sent
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args[0][0]
+
+        assert call_args["jsonrpc"] == "2.0"
+        assert "error" in call_args
+        assert call_args["id"] == "test-req"
+        assert call_args["error"]["code"] == JsonRpcErrorCode.INTERNAL_ERROR.value
+
+        # SECURITY: Error message should be generic
+        assert call_args["error"]["message"] == "Internal server error"
+
+        # SECURITY: No error data should be disclosed
+        assert call_args["error"].get("data") is None
+
+    @pytest.mark.asyncio
+    async def test_debug_mode_includes_full_error_details(
+        self, method_invoker: RpcMethodInvoker, promise_manager: RpcPromiseManager
+    ) -> None:
+        """
+        Test that debug mode (debug_mode=True) includes full error details.
+
+        Verifies that:
+        - Full error message with exception details is sent
+        - Exception type is included in error data
+        - Method name is included in error data
+        - Useful for development and debugging
+        """
+        from fastapi_ws_rpc.config import RpcDebugConfig
+
+        mock_send = AsyncMock()
+
+        # Create protocol handler with debug mode enabled
+        handler = RpcProtocolHandler(
+            method_invoker,
+            promise_manager,
+            mock_send,
+            debug_config=RpcDebugConfig(debug_mode=True),
+        )
+
+        # Call a method that will fail
+        message = {
+            "jsonrpc": "2.0",
+            "id": "test-req",
+            "method": "failing_method",
+        }
+
+        await handler.handle_message(message)
+
+        # Verify error response was sent
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args[0][0]
+
+        assert call_args["jsonrpc"] == "2.0"
+        assert "error" in call_args
+        assert call_args["id"] == "test-req"
+        assert call_args["error"]["code"] == JsonRpcErrorCode.INTERNAL_ERROR.value
+
+        # DEBUG: Full error message should be included
+        error_msg = call_args["error"]["message"]
+        assert "Internal error:" in error_msg
+        assert "Method failed" in error_msg  # Exception message
+
+        # DEBUG: Error data should include exception type and method name
+        error_data = call_args["error"]["data"]
+        assert error_data is not None
+        assert error_data["type"] == "RuntimeError"
+        assert error_data["method"] == "failing_method"
+
+    @pytest.mark.asyncio
+    async def test_default_config_uses_production_mode(
+        self, method_invoker: RpcMethodInvoker, promise_manager: RpcPromiseManager
+    ) -> None:
+        """
+        Test that default configuration uses production mode (secure by default).
+
+        Verifies that:
+        - When no debug_config is provided, production mode is used
+        - Errors are sanitized by default
+        - Security-first approach for v1.0.0
+        """
+        mock_send = AsyncMock()
+
+        # Create protocol handler without debug_config (uses default)
+        handler = RpcProtocolHandler(method_invoker, promise_manager, mock_send)
+
+        # Call a method that will fail
+        message = {
+            "jsonrpc": "2.0",
+            "id": "test-req",
+            "method": "failing_method",
+        }
+
+        await handler.handle_message(message)
+
+        # Verify error response was sent
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args[0][0]
+
+        # Should use production mode (sanitized)
+        assert call_args["error"]["message"] == "Internal server error"
+        assert call_args["error"].get("data") is None
+
+    @pytest.mark.asyncio
+    async def test_server_side_logging_includes_full_details(
+        self,
+        method_invoker: RpcMethodInvoker,
+        promise_manager: RpcPromiseManager,
+        caplog: Any,
+    ) -> None:
+        """
+        Test that server-side logging always includes full error details.
+
+        Verifies that:
+        - Regardless of debug_mode, server logs include full details
+        - Exception type and message are logged
+        - Method name is logged
+        - Helps with server-side debugging without exposing to clients
+        """
+        import logging
+
+        from fastapi_ws_rpc.config import RpcDebugConfig
+
+        mock_send = AsyncMock()
+
+        # Create protocol handler with production mode
+        handler = RpcProtocolHandler(
+            method_invoker, promise_manager, mock_send, debug_config=RpcDebugConfig()
+        )
+
+        # Call a method that will fail
+        message = {
+            "jsonrpc": "2.0",
+            "id": "test-req",
+            "method": "failing_method",
+        }
+
+        # Set logging level to capture ERROR logs from RPC_PROTOCOL logger
+        with caplog.at_level(logging.ERROR, logger="RPC_PROTOCOL"):
+            await handler.handle_message(message)
+
+        # Verify server-side logs include full details
+        # Note: caplog.text contains the full log output
+        log_records = caplog.records
+        assert len(log_records) > 0, "Expected at least one log record"
+
+        # Find the error log for the failed method
+        error_log = None
+        for record in log_records:
+            if record.levelname == "ERROR" and "failing_method" in record.message:
+                error_log = record
+                break
+
+        assert error_log is not None, "Expected ERROR log for failing_method"
+        assert (
+            "RuntimeError" in str(error_log.exc_info)
+            or "RuntimeError" in error_log.message
+        )
+        assert "Method failed" in error_log.message
+
+        # But client response should still be sanitized
+        call_args = mock_send.call_args[0][0]
+        assert call_args["error"]["message"] == "Internal server error"
+
+    @pytest.mark.asyncio
+    async def test_parameter_errors_not_affected_by_debug_mode(
+        self, method_invoker: RpcMethodInvoker, promise_manager: RpcPromiseManager
+    ) -> None:
+        """
+        Test that parameter validation errors are not affected by debug_mode.
+
+        Verifies that:
+        - INVALID_PARAMS errors still include error details
+        - These are client errors, not server errors
+        - Only INTERNAL_ERROR is sanitized in production mode
+        """
+        from fastapi_ws_rpc.config import RpcDebugConfig
+
+        mock_send = AsyncMock()
+
+        # Create protocol handler with production mode
+        handler = RpcProtocolHandler(
+            method_invoker, promise_manager, mock_send, debug_config=RpcDebugConfig()
+        )
+
+        # Call a method with invalid parameters
+        message = {
+            "jsonrpc": "2.0",
+            "id": "test-req",
+            "method": "fast_method",
+            "params": {"invalid_arg": "value"},  # fast_method takes no args
+        }
+
+        await handler.handle_message(message)
+
+        # Verify error response was sent
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args[0][0]
+
+        assert call_args["error"]["code"] == JsonRpcErrorCode.INVALID_PARAMS.value
+
+        # Parameter errors should still include details (client error, not server error)
+        error_msg = call_args["error"]["message"]
+        assert "Invalid parameters:" in error_msg
+        assert error_msg != "Internal server error"  # Not sanitized

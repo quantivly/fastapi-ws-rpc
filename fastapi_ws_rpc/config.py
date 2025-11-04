@@ -12,6 +12,82 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class RpcDebugConfig:
+    """Configuration for RPC debugging and error disclosure.
+
+    Controls how much error information is exposed to clients.
+    In production, errors should be sanitized to prevent information disclosure.
+
+    Parameters
+    ----------
+    debug_mode : bool, default False
+        Whether to include full error details in responses. When False (default),
+        errors are sanitized to generic messages to prevent leaking implementation
+        details. When True, full error details including exception types and method
+        names are included for debugging.
+
+    Examples
+    --------
+    >>> # Production mode (default) - sanitized errors
+    >>> config = RpcDebugConfig()
+    >>> assert not config.debug_mode
+
+    >>> # Development mode - full error details
+    >>> config = RpcDebugConfig(debug_mode=True)
+    >>> assert config.debug_mode
+    """
+
+    debug_mode: bool = False
+
+    def validate(self) -> None:
+        """Explicitly validate the configuration.
+
+        This method exists for consistency with other config classes.
+        No validation needed for boolean field.
+        """
+        pass
+
+
+@dataclass(frozen=True)
+class WebSocketConnectionConfig:
+    """Configuration for WebSocket-specific connection settings.
+
+    Controls WebSocket protocol-level features like subprotocol negotiation.
+
+    Parameters
+    ----------
+    subprotocols : list[str] | None, default ["jsonrpc2.0"]
+        List of WebSocket subprotocols to negotiate. Defaults to ["jsonrpc2.0"]
+        for JSON-RPC 2.0 compliance. Set to None or empty list to disable
+        subprotocol negotiation.
+
+    Examples
+    --------
+    >>> # Default JSON-RPC 2.0 subprotocol
+    >>> config = WebSocketConnectionConfig()
+    >>> assert config.subprotocols == ["jsonrpc2.0"]
+
+    >>> # Disable subprotocol negotiation
+    >>> config = WebSocketConnectionConfig(subprotocols=None)
+    >>> assert config.subprotocols is None
+
+    >>> # Custom subprotocols
+    >>> config = WebSocketConnectionConfig(subprotocols=["custom.v1", "jsonrpc2.0"])
+    >>> assert len(config.subprotocols) == 2
+    """
+
+    subprotocols: list[str] | None = field(default_factory=lambda: ["jsonrpc2.0"])
+
+    def validate(self) -> None:
+        """Explicitly validate the configuration.
+
+        This method exists for consistency with other config classes.
+        No validation needed for optional list field.
+        """
+        pass
+
+
+@dataclass(frozen=True)
 class RpcConnectionConfig:
     """Configuration for RPC connection lifecycle and timeouts.
 
@@ -30,6 +106,12 @@ class RpcConnectionConfig:
         Time in seconds of inactivity after which the connection is considered
         idle and should be closed. If None, idle connections stay open.
         Replaces the old receive_timeout concept.
+    debug : RpcDebugConfig, default RpcDebugConfig()
+        Debug configuration controlling error disclosure. Defaults to
+        production-safe mode (debug_mode=False) for v1.0.0 security.
+    websocket : WebSocketConnectionConfig, default WebSocketConnectionConfig()
+        WebSocket-specific connection configuration including subprotocol
+        negotiation. Defaults to JSON-RPC 2.0 subprotocol.
 
     Examples
     --------
@@ -44,11 +126,27 @@ class RpcConnectionConfig:
     >>> # No timeouts for development
     >>> config = RpcConnectionConfig()
     >>> config.validate()
+
+    >>> # Development with debug mode enabled
+    >>> config = RpcConnectionConfig(
+    ...     debug=RpcDebugConfig(debug_mode=True)
+    ... )
+    >>> assert config.debug.debug_mode
+
+    >>> # Custom WebSocket subprotocol
+    >>> config = RpcConnectionConfig(
+    ...     websocket=WebSocketConnectionConfig(subprotocols=["custom.v1"])
+    ... )
+    >>> assert config.websocket.subprotocols == ["custom.v1"]
     """
 
     default_response_timeout: float | None = None
     max_connection_duration: float | None = None
     idle_timeout: float | None = None
+    debug: RpcDebugConfig = field(default_factory=RpcDebugConfig)
+    websocket: WebSocketConnectionConfig = field(
+        default_factory=WebSocketConnectionConfig
+    )
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization.
@@ -97,7 +195,8 @@ class RpcConnectionConfig:
         __post_init__, so this is typically not needed.
         """
         # Validation is already done in __post_init__
-        pass
+        self.debug.validate()
+        self.websocket.validate()
 
 
 @dataclass(frozen=True)
@@ -356,6 +455,9 @@ class WebSocketRpcClientConfig:
         Keepalive behavior and failure handling.
     retry : RpcRetryConfig, default RpcRetryConfig()
         Retry behavior with exponential backoff and jitter.
+    websocket : WebSocketConnectionConfig, default WebSocketConnectionConfig()
+        WebSocket-specific connection configuration including subprotocol
+        negotiation. Defaults to JSON-RPC 2.0 subprotocol.
     websocket_kwargs : dict[str, Any], default {}
         Additional keyword arguments to pass to the underlying WebSocket
         connection. Can include proxy settings, headers, etc.
@@ -383,12 +485,21 @@ class WebSocketRpcClientConfig:
     >>> config = WebSocketRpcClientConfig.development_defaults()
     >>> assert config.connection.default_response_timeout is None
     >>> assert not config.keepalive.enabled
+
+    >>> # Custom WebSocket subprotocol
+    >>> config = WebSocketRpcClientConfig(
+    ...     websocket=WebSocketConnectionConfig(subprotocols=["custom.v1"])
+    ... )
+    >>> assert config.websocket.subprotocols == ["custom.v1"]
     """
 
     connection: RpcConnectionConfig = field(default_factory=RpcConnectionConfig)
     backpressure: RpcBackpressureConfig = field(default_factory=RpcBackpressureConfig)
     keepalive: RpcKeepaliveConfig = field(default_factory=RpcKeepaliveConfig)
     retry: RpcRetryConfig = field(default_factory=RpcRetryConfig)
+    websocket: WebSocketConnectionConfig = field(
+        default_factory=WebSocketConnectionConfig
+    )
     websocket_kwargs: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -406,6 +517,7 @@ class WebSocketRpcClientConfig:
         self.backpressure.validate()
         self.keepalive.validate()
         self.retry.validate()
+        self.websocket.validate()
 
     @classmethod
     def production_defaults(cls) -> WebSocketRpcClientConfig:

@@ -22,6 +22,7 @@ from .utils import gen_uid
 if TYPE_CHECKING:
     from typing_extensions import TypeAlias
 
+    from .config import RpcDebugConfig
     from .rpc_methods import RpcMethodsBase
 
 # Type aliases for callbacks (using string quotes for forward references)
@@ -56,6 +57,8 @@ class RpcChannel:
         sync_channel_id: bool = False,
         max_pending_requests: int | None = None,
         max_connection_duration: float | None = None,
+        debug_config: RpcDebugConfig | None = None,
+        subprotocol: str | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -76,6 +79,10 @@ class RpcChannel:
             max_connection_duration (float, optional): Maximum time in seconds
             that this channel can remain open. After this time, the connection
             will be gracefully closed. None means no limit. Defaults to None.
+            debug_config (RpcDebugConfig, optional): Configuration for error
+            disclosure. If None, defaults to production-safe mode (debug_mode=False).
+            subprotocol (str, optional): Negotiated WebSocket subprotocol. This is
+            stored for runtime checks and logging. Defaults to None.
         """
         logger.debug("Initializing RPC channel...")
         self.methods = methods._copy_()
@@ -92,6 +99,7 @@ class RpcChannel:
             self._method_invoker,
             self._promise_manager,
             self.send_raw,
+            debug_config=debug_config,
         )
 
         self.socket = socket
@@ -105,10 +113,18 @@ class RpcChannel:
         self._other_channel_id: str | None = None
         # asyncio event to check if we got the channel id of the other side
         self._channel_id_synced = asyncio.Event()
+        # Store negotiated WebSocket subprotocol for runtime checks
+        self.subprotocol = subprotocol
         #
         # convenience caller
         # TODO - pass remote methods object to support validation before call
         self.other = RpcCaller(self)
+
+        # Log subprotocol if present
+        if self.subprotocol:
+            logger.debug(
+                f"RPC channel initialized with subprotocol: {self.subprotocol}"
+            )
         # core event callback registers
         self._connect_handlers: list[OnConnectCallback] = []
         self._disconnect_handlers: list[OnDisconnectCallback] = []

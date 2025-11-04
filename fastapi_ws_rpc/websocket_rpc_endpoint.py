@@ -178,8 +178,27 @@ class WebSocketRpcEndpoint:
         - Different from per-message timeout (old behavior)
         """
         try:
-            await self.manager.connect(websocket)
-            logger.info("Client connected", {"remote_address": websocket.client})
+            # Accept WebSocket connection with subprotocol negotiation
+            subprotocols = (
+                self.connection_config.websocket.subprotocols
+                if self.connection_config.websocket.subprotocols
+                else None
+            )
+
+            # Pass subprotocol to manager for accept() call
+            if subprotocols:
+                await self.manager.connect(websocket, subprotocol=subprotocols[0])
+                logger.info(
+                    "Client connected with subprotocol: %s",
+                    subprotocols[0],
+                    {"remote_address": websocket.client},
+                )
+            else:
+                await self.manager.connect(websocket)
+                logger.info(
+                    "Client connected without subprotocol",
+                    {"remote_address": websocket.client},
+                )
             # Create WebSocket wrapper with optional message size limit
             if self._max_message_size is not None:
                 simple_websocket = self._serializing_socket_cls(
@@ -190,12 +209,22 @@ class WebSocketRpcEndpoint:
                 simple_websocket = self._serializing_socket_cls(
                     WebSocketSimplifier(websocket, frame_type=self._frame_type)
                 )  # type: ignore[call-arg]
+            # Store negotiated subprotocol from FastAPI WebSocket
+            # The subprotocol is available after accept() is called
+            negotiated_subprotocol = (
+                getattr(websocket, "scope", {}).get("subprotocols", [None])[0]
+                if subprotocols
+                else None
+            )
+
             channel = RpcChannel(
                 self.methods,
                 simple_websocket,
                 sync_channel_id=self._rpc_channel_get_remote_id,
                 max_pending_requests=self._max_pending_requests,
                 max_connection_duration=self._max_connection_duration,
+                debug_config=self.connection_config.debug,
+                subprotocol=negotiated_subprotocol,
                 **kwargs,
             )
             # register connect / disconnect handler

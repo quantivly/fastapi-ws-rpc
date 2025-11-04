@@ -223,12 +223,30 @@ class WebSocketRpcClient:
         try:
             logger.info(f"Connecting to {self.uri}...")
 
-            # Step 1: Create WebSocket connection
+            # Step 1: Create WebSocket connection with subprotocol negotiation
             # This can raise connection-related exceptions
-            logger.debug(
-                f"Creating WebSocket connection to {self.uri} with parameters: {self.connect_kwargs}"
-            )
-            raw_ws = await websockets.connect(self.uri, **self.connect_kwargs)
+            connect_kwargs = self.connect_kwargs.copy()
+
+            # Add subprotocols to connect_kwargs if configured
+            if self.config.websocket and self.config.websocket.subprotocols:
+                connect_kwargs["subprotocols"] = self.config.websocket.subprotocols
+                logger.debug(
+                    f"Creating WebSocket connection to {self.uri} with subprotocols: "
+                    f"{self.config.websocket.subprotocols}"
+                )
+            else:
+                logger.debug(
+                    f"Creating WebSocket connection to {self.uri} without subprotocol negotiation"
+                )
+
+            logger.debug(f"Connection parameters: {connect_kwargs}")
+            raw_ws = await websockets.connect(self.uri, **connect_kwargs)
+
+            # Log negotiated subprotocol
+            if hasattr(raw_ws, "subprotocol") and raw_ws.subprotocol:
+                logger.info(f"WebSocket subprotocol negotiated: {raw_ws.subprotocol}")
+            else:
+                logger.debug("No WebSocket subprotocol negotiated")
 
             # Step 2-4: Initialize RPC layer (wrap socket, create channel, register handlers)
             # IMPORTANT: We use nested try-except blocks to ensure proper cleanup at each stage.
@@ -258,12 +276,19 @@ class WebSocketRpcClient:
                 # Create RPC channel with production hardening parameters:
                 # - max_pending_requests: Prevents memory exhaustion from request flooding
                 # - max_connection_duration: Auto-closes long-lived connections for rotation
+                # - debug_config: Controls error disclosure to prevent information leakage
+                # - subprotocol: Store negotiated WebSocket subprotocol for runtime checks
+                negotiated_subprotocol = (
+                    raw_ws.subprotocol if hasattr(raw_ws, "subprotocol") else None
+                )
                 self.channel = RpcChannel(
                     self.methods,
                     self.ws,
                     default_response_timeout=self._default_response_timeout,
                     max_pending_requests=self._max_pending_requests,
                     max_connection_duration=self._max_connection_duration,
+                    debug_config=self.config.connection.debug,
+                    subprotocol=negotiated_subprotocol,
                 )
 
                 # Register user-provided callbacks for lifecycle events

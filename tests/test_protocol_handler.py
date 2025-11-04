@@ -303,7 +303,10 @@ class TestRequestHandling:
         Verifies that:
         - Exception from method is caught
         - Error response is sent with INTERNAL_ERROR code
-        - Error message includes exception details
+        - Error message is sanitized in production mode (default)
+
+        NOTE: Default protocol_handler uses production mode (debug_mode=False),
+        so error details are sanitized for security.
         """
         request = JsonRpcRequest(
             jsonrpc="2.0",
@@ -318,7 +321,10 @@ class TestRequestHandling:
 
         assert "error" in sent_data
         assert sent_data["error"]["code"] == JsonRpcErrorCode.INTERNAL_ERROR.value
-        assert "internal error" in sent_data["error"]["message"].lower()
+        # In production mode (default), error message is sanitized
+        assert sent_data["error"]["message"] == "Internal server error"
+        # No error data should be exposed in production mode
+        assert sent_data["error"].get("data") is None
 
     @pytest.mark.asyncio
     async def test_handle_request_private_method(

@@ -62,7 +62,9 @@ class ConnectionManager:
     def __init__(self) -> None:
         self.active_connections: list[WebSocket] = []
 
-    async def connect(self, websocket: WebSocket) -> None:
+    async def connect(
+        self, websocket: WebSocket, subprotocol: str | None = None
+    ) -> None:
         """
         Accept and register a new WebSocket connection.
 
@@ -73,6 +75,9 @@ class ConnectionManager:
         ----------
         websocket : WebSocket
             The WebSocket connection to accept and register.
+        subprotocol : str | None, optional
+            WebSocket subprotocol to negotiate during the handshake.
+            If None, no subprotocol negotiation is performed.
 
         Notes
         -----
@@ -87,8 +92,14 @@ class ConnectionManager:
         >>> async def websocket_endpoint(websocket: WebSocket):
         ...     await manager.connect(websocket)
         ...     # Now the connection is active and tracked
+
+        >>> # With subprotocol negotiation
+        >>> await manager.connect(websocket, subprotocol="jsonrpc2.0")
         """
-        await websocket.accept()
+        if subprotocol:
+            await websocket.accept(subprotocol=subprotocol)
+        else:
+            await websocket.accept()
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket) -> None:
