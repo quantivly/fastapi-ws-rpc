@@ -225,11 +225,10 @@ class WebSocketRpcEndpoint:
                 max_connection_duration=self._max_connection_duration,
                 debug_config=self.connection_config.debug,
                 subprotocol=negotiated_subprotocol,
+                connect_callbacks=self._on_connect,
+                disconnect_callbacks=self._on_disconnect,
                 **kwargs,
             )
-            # register connect / disconnect handler
-            channel.register_connect_handler(self._on_connect)
-            channel.register_disconnect_handler(self._on_disconnect)
             # trigger connect handlers
             await channel.on_connect()
             try:

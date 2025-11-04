@@ -108,8 +108,8 @@ def protocol_handler(
 # ============================================================================
 
 
-class TestBackpressure:
-    """Test backpressure control and maximum pending request limits."""
+class TestReceiveBackpressure:
+    """Test receive-side backpressure control and maximum pending request limits."""
 
     @pytest.mark.asyncio
     async def test_backpressure_error_when_limit_reached(
@@ -219,6 +219,234 @@ class TestBackpressure:
         # Should have exactly 5 successful and 5 failures
         assert manager.get_pending_count() == 5
         assert len(errors) == 5
+
+
+# ============================================================================
+# Send Backpressure Tests
+# ============================================================================
+
+
+class TestSendBackpressure:
+    """Test send-side backpressure control and maximum send queue limits."""
+
+    @pytest.mark.asyncio
+    async def test_send_backpressure_enforced(self) -> None:
+        """
+        Test that send backpressure prevents queue overflow.
+
+        Verifies that:
+        - Sends up to limit succeed
+        - Send exceeding limit raises RpcBackpressureError
+        - Error message is descriptive
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fastapi_ws_rpc.rpc_channel import RpcChannel
+
+        # Create mock socket that blocks on send (simulating slow network)
+        mock_socket = MagicMock()
+        send_event = asyncio.Event()
+
+        async def blocking_send(data: dict[str, Any]) -> None:
+            # Block until event is set (simulating slow send)
+            await send_event.wait()
+
+        mock_socket.send = AsyncMock(side_effect=blocking_send)
+        mock_socket.close = AsyncMock()
+
+        # Create channel with low send queue limit
+        test_methods = TestMethods()
+        channel = RpcChannel(
+            test_methods,
+            mock_socket,
+            max_send_queue_size=3,  # Low limit for testing
+        )
+
+        # Start 3 sends (should succeed, but will block)
+        send_tasks = []
+        for i in range(3):
+            task = asyncio.create_task(channel.send_raw({"id": i, "method": "test"}))
+            send_tasks.append(task)
+            # Give task time to acquire semaphore
+            await asyncio.sleep(0.01)
+
+        # 4th send should fail with backpressure error
+        with pytest.raises(RpcBackpressureError) as exc_info:
+            await channel.send_raw({"id": 3, "method": "test"})
+
+        error_msg = str(exc_info.value)
+        assert "send queue full" in error_msg.lower()
+        assert "3" in error_msg  # limit value
+        assert "pending" in error_msg.lower()
+
+        # Cleanup: unblock sends
+        send_event.set()
+        await asyncio.gather(*send_tasks, return_exceptions=True)
+        await channel.close()
+
+    @pytest.mark.asyncio
+    async def test_send_backpressure_disabled(self) -> None:
+        """
+        Test that setting max_send_queue_size=0 disables backpressure.
+
+        Verifies that:
+        - Can send unlimited messages when disabled
+        - No RpcBackpressureError is raised
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fastapi_ws_rpc.rpc_channel import RpcChannel
+
+        mock_socket = MagicMock()
+        mock_socket.send = AsyncMock()
+        mock_socket.close = AsyncMock()
+
+        # Create channel with backpressure disabled
+        test_methods = TestMethods()
+        channel = RpcChannel(
+            test_methods,
+            mock_socket,
+            max_send_queue_size=0,  # Disabled
+        )
+
+        # Should be able to send many messages
+        for i in range(100):
+            await channel.send_raw({"id": i, "method": "test"})
+
+        # Verify all sends succeeded
+        assert mock_socket.send.call_count == 100
+
+        await channel.close()
+
+    @pytest.mark.asyncio
+    async def test_send_backpressure_recovers(self) -> None:
+        """
+        Test that send backpressure recovers after messages complete.
+
+        Verifies that:
+        - After hitting limit, completing sends allows new ones
+        - Semaphore is properly released after sends
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fastapi_ws_rpc.rpc_channel import RpcChannel
+
+        mock_socket = MagicMock()
+        mock_socket.send = AsyncMock()
+        mock_socket.close = AsyncMock()
+
+        # Create channel with low limit
+        test_methods = TestMethods()
+        channel = RpcChannel(
+            test_methods,
+            mock_socket,
+            max_send_queue_size=5,
+        )
+
+        # Send 5 messages (should succeed)
+        for i in range(5):
+            await channel.send_raw({"id": i, "method": "test"})
+
+        # Should be able to send more (semaphore was released)
+        for i in range(5, 10):
+            await channel.send_raw({"id": i, "method": "test"})
+
+        assert mock_socket.send.call_count == 10
+
+        await channel.close()
+
+    @pytest.mark.asyncio
+    async def test_send_backpressure_on_closed_channel(self) -> None:
+        """
+        Test that sending on closed channel raises RpcChannelClosedError.
+
+        Verifies that:
+        - Closed channel check happens before backpressure check
+        - Appropriate error is raised
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fastapi_ws_rpc.rpc_channel import RpcChannel
+
+        mock_socket = MagicMock()
+        mock_socket.send = AsyncMock()
+        mock_socket.close = AsyncMock()
+
+        test_methods = TestMethods()
+        channel = RpcChannel(
+            test_methods,
+            mock_socket,
+            max_send_queue_size=5,
+        )
+
+        # Close the channel
+        await channel.close()
+
+        # Attempt to send should raise RpcChannelClosedError
+        with pytest.raises(RpcChannelClosedError) as exc_info:
+            await channel.send_raw({"id": 1, "method": "test"})
+
+        assert "closed" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_send_backpressure_with_concurrent_sends(self) -> None:
+        """
+        Test send backpressure with concurrent send operations.
+
+        Verifies that:
+        - Concurrent sends respect backpressure limit
+        - Some succeed, some fail with backpressure error
+        - Semaphore prevents exceeding limit
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fastapi_ws_rpc.rpc_channel import RpcChannel
+
+        mock_socket = MagicMock()
+        send_event = asyncio.Event()
+
+        async def blocking_send(data: dict[str, Any]) -> None:
+            await send_event.wait()
+
+        mock_socket.send = AsyncMock(side_effect=blocking_send)
+        mock_socket.close = AsyncMock()
+
+        test_methods = TestMethods()
+        channel = RpcChannel(
+            test_methods,
+            mock_socket,
+            max_send_queue_size=5,
+        )
+
+        # Start 10 concurrent sends
+        send_tasks = []
+        for i in range(10):
+            task = asyncio.create_task(channel.send_raw({"id": i, "method": "test"}))
+            send_tasks.append(task)
+            # Small delay to ensure tasks start
+            await asyncio.sleep(0.001)
+
+        # Give tasks time to hit backpressure
+        await asyncio.sleep(0.1)
+
+        # Unblock the sends
+        send_event.set()
+
+        # Wait for all tasks to complete
+        results = await asyncio.gather(*send_tasks, return_exceptions=True)
+
+        # Count successes and backpressure errors
+        successes = sum(1 for r in results if r is None)
+        backpressure_errors = sum(
+            1 for r in results if isinstance(r, RpcBackpressureError)
+        )
+
+        # Should have exactly 5 successes (the limit)
+        assert successes == 5
+        # Remaining should be backpressure errors
+        assert backpressure_errors == 5
+
+        await channel.close()
 
 
 # ============================================================================

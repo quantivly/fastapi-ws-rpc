@@ -289,11 +289,9 @@ class WebSocketRpcClient:
                     max_connection_duration=self._max_connection_duration,
                     debug_config=self.config.connection.debug,
                     subprotocol=negotiated_subprotocol,
+                    connect_callbacks=self._on_connect,
+                    disconnect_callbacks=self._on_disconnect,
                 )
-
-                # Register user-provided callbacks for lifecycle events
-                self.channel.register_connect_handler(self._on_connect)
-                self.channel.register_disconnect_handler(self._on_disconnect)
 
             except (ValidationError, ValueError, TypeError) as e:
                 # RPC initialization failed (bad config, validation error, etc.)

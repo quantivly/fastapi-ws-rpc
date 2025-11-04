@@ -14,7 +14,7 @@ from ._internal.caller import RpcCaller
 from ._internal.method_invoker import RpcMethodInvoker
 from ._internal.promise_manager import RpcPromise, RpcPromiseManager
 from ._internal.protocol_handler import RpcProtocolHandler
-from .exceptions import RemoteValueError
+from .exceptions import RemoteValueError, RpcBackpressureError, RpcChannelClosedError
 from .logger import get_logger
 from .schemas import JsonRpcRequest, JsonRpcResponse
 from .utils import gen_uid
@@ -59,6 +59,10 @@ class RpcChannel:
         max_connection_duration: float | None = None,
         debug_config: RpcDebugConfig | None = None,
         subprotocol: str | None = None,
+        connect_callbacks: list[OnConnectCallback] | None = None,
+        disconnect_callbacks: list[OnDisconnectCallback] | None = None,
+        error_callbacks: list[OnErrorCallback] | None = None,
+        max_send_queue_size: int | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -83,6 +87,16 @@ class RpcChannel:
             disclosure. If None, defaults to production-safe mode (debug_mode=False).
             subprotocol (str, optional): Negotiated WebSocket subprotocol. This is
             stored for runtime checks and logging. Defaults to None.
+            connect_callbacks (list[OnConnectCallback], optional): List of callbacks
+            to call when connection is established. Defaults to None.
+            disconnect_callbacks (list[OnDisconnectCallback], optional): List of
+            callbacks to call when connection is closed. Defaults to None.
+            error_callbacks (list[OnErrorCallback], optional): List of callbacks
+            to call when an error occurs. Defaults to None.
+            max_send_queue_size (int, optional): Maximum number of pending outgoing
+            messages before backpressure is applied. Defaults to 1000. Set to 0 to
+            disable send backpressure. Prevents send-side overwhelm and memory
+            exhaustion from queued messages.
         """
         logger.debug("Initializing RPC channel...")
         self.methods = methods._copy_()
@@ -126,9 +140,11 @@ class RpcChannel:
                 f"RPC channel initialized with subprotocol: {self.subprotocol}"
             )
         # core event callback registers
-        self._connect_handlers: list[OnConnectCallback] = []
-        self._disconnect_handlers: list[OnDisconnectCallback] = []
-        self._error_handlers: list[OnErrorCallback] = []
+        self._connect_callbacks: list[OnConnectCallback] = connect_callbacks or []
+        self._disconnect_callbacks: list[OnDisconnectCallback] = (
+            disconnect_callbacks or []
+        )
+        self._error_callbacks: list[OnErrorCallback] = error_callbacks or []
 
         # Connection duration tracking
         self._max_connection_duration = max_connection_duration
@@ -141,6 +157,16 @@ class RpcChannel:
             self._duration_watchdog_task = asyncio.create_task(
                 self._connection_duration_watchdog()
             )
+
+        # Send backpressure tracking
+        # Use semaphore to limit concurrent sends, preventing memory exhaustion
+        # from queued outgoing messages
+        self._max_send_queue_size = (
+            max_send_queue_size if max_send_queue_size is not None else 1000
+        )
+        self._send_semaphore: asyncio.Semaphore | None = None
+        if self._max_send_queue_size > 0:
+            self._send_semaphore = asyncio.Semaphore(self._max_send_queue_size)
 
         # any other kwarg goes straight to channel context (Accessible to methods)
         self._context: dict[str, Any] = kwargs or {}
@@ -171,9 +197,47 @@ class RpcChannel:
 
     async def send_raw(self, data: dict[str, Any]) -> None:
         """
-        Send raw dictionary data as JSON
+        Send raw dictionary data as JSON with backpressure control.
+
+        This method enforces send-side backpressure to prevent memory exhaustion
+        from queued outgoing messages. If max_send_queue_size is configured and
+        the send queue is full, this method will raise RpcBackpressureError.
+
+        Args:
+            data: Dictionary to send as JSON over the socket
+
+        Raises:
+            RpcBackpressureError: If send queue is full (too many pending sends)
+            RpcChannelClosedError: If channel is closed
         """
-        await self.socket.send(data)
+        # Check if channel is closed first
+        if self.is_closed():
+            raise RpcChannelClosedError("Cannot send on closed channel")
+
+        # Apply send backpressure if configured
+        if self._send_semaphore is not None:
+            # Check if semaphore is available without blocking
+            # We use _value to check available permits (fail fast instead of queuing)
+            if self._send_semaphore._value <= 0:
+                # Calculate pending count for error message
+                pending = self._max_send_queue_size - self._send_semaphore._value
+                raise RpcBackpressureError(
+                    f"Send queue full: {pending}/{self._max_send_queue_size} "
+                    f"messages pending. Slow down sending or increase max_send_queue_size."
+                )
+
+            # Acquire semaphore (should succeed immediately due to check above)
+            await self._send_semaphore.acquire()
+
+            try:
+                # Send the message (socket handles serialization)
+                await self.socket.send(data)
+            finally:
+                # Always release semaphore after send completes (or fails)
+                self._send_semaphore.release()
+        else:
+            # No backpressure - send directly
+            await self.socket.send(data)
 
     async def receive(self) -> Any:
         """
@@ -254,63 +318,103 @@ class RpcChannel:
             await self.on_error(e)
             raise
 
-    def register_connect_handler(
-        self, coros: list[OnConnectCallback] | None = None
-    ) -> None:
-        """
-        Register a connection handler callback that will be called (As an async
-        task)) with the channel
-        Args:
-            coros (List[Coroutine]): async callback
-        """
-        if coros is not None:
-            self._connect_handlers.extend(coros)
+    def add_connect_callback(self, callback: OnConnectCallback) -> None:
+        """Add a callback to be called when connection is established.
 
-    def register_disconnect_handler(
-        self, coros: list[OnDisconnectCallback] | None = None
-    ) -> None:
-        """
-        Register a disconnect handler callback that will be called (As an async
-        task)) with the channel id
         Args:
-            coros (List[Coroutine]): async callback
+            callback: Async function called with (channel) when connected
         """
-        if coros is not None:
-            self._disconnect_handlers.extend(coros)
+        self._connect_callbacks.append(callback)
 
-    def register_error_handler(
-        self, coros: list[OnErrorCallback] | None = None
-    ) -> None:
-        """
-        Register an error handler callback that will be called (As an async
-        task)) with the channel and triggered error.
+    def remove_connect_callback(self, callback: OnConnectCallback) -> bool:
+        """Remove a connect callback.
+
         Args:
-            coros (List[Coroutine]): async callback
-        """
-        if coros is not None:
-            self._error_handlers.extend(coros)
+            callback: The callback to remove
 
-    async def on_handler_event(
+        Returns:
+            True if callback was found and removed, False otherwise
+        """
+        try:
+            self._connect_callbacks.remove(callback)
+            return True
+        except ValueError:
+            return False
+
+    def add_disconnect_callback(self, callback: OnDisconnectCallback) -> None:
+        """Add a callback to be called when connection is closed.
+
+        Args:
+            callback: Async function called with (channel) when disconnected
+        """
+        self._disconnect_callbacks.append(callback)
+
+    def remove_disconnect_callback(self, callback: OnDisconnectCallback) -> bool:
+        """Remove a disconnect callback.
+
+        Args:
+            callback: The callback to remove
+
+        Returns:
+            True if callback was found and removed, False otherwise
+        """
+        try:
+            self._disconnect_callbacks.remove(callback)
+            return True
+        except ValueError:
+            return False
+
+    def add_error_callback(self, callback: OnErrorCallback) -> None:
+        """Add a callback to be called when an error occurs.
+
+        Args:
+            callback: Async function called with (channel, error) when error occurs
+        """
+        self._error_callbacks.append(callback)
+
+    def remove_error_callback(self, callback: OnErrorCallback) -> bool:
+        """Remove an error callback.
+
+        Args:
+            callback: The callback to remove
+
+        Returns:
+            True if callback was found and removed, False otherwise
+        """
+        try:
+            self._error_callbacks.remove(callback)
+            return True
+        except ValueError:
+            return False
+
+    async def _invoke_callbacks(
         self,
-        handlers: (
+        callbacks: (
             list[OnConnectCallback] | list[OnDisconnectCallback] | list[OnErrorCallback]
         ),
         *args: Any,
         **kwargs: Any,
     ) -> None:
-        await asyncio.gather(*(callback(*args, **kwargs) for callback in handlers))
+        """Invoke all callbacks in the list with the provided arguments.
+
+        Args:
+            callbacks: List of callbacks to invoke
+            *args: Positional arguments to pass to callbacks
+            **kwargs: Keyword arguments to pass to callbacks
+        """
+        await asyncio.gather(*(callback(*args, **kwargs) for callback in callbacks))
 
     async def on_connect(self) -> None:
         """
         Run get other channel id if sync_channel_id is True
-        Run all callbacks from self._connect_handlers
+        Run all callbacks from self._connect_callbacks
         """
         if self._sync_channel_id:
             logger.debug("Syncing channel ID...")
             self._get_other_channel_id_task = asyncio.create_task(
                 self._get_other_channel_id()
             )
-        await self.on_handler_event(self._connect_handlers, self)
+        await self._invoke_callbacks(self._connect_callbacks, self)
 
     async def _get_other_channel_id(self) -> str:
         """
@@ -338,20 +442,25 @@ class RpcChannel:
         """
         Handle channel disconnection.
 
-        This method is idempotent - disconnect handlers are only called once.
+        This method is idempotent - disconnect callbacks are only called once.
         Subsequent calls will be no-ops.
         """
-        # Check if already closed to prevent double-calling disconnect handlers
+        # Check if already closed to prevent double-calling disconnect callbacks
         if self.is_closed():
-            logger.debug(f"Channel {self.id} already disconnected, skipping handlers")
+            logger.debug(f"Channel {self.id} already disconnected, skipping callbacks")
             return
 
         # disconnect happened - mark the channel as closed
         self._promise_manager.close()
-        await self.on_handler_event(self._disconnect_handlers, self)
+        await self._invoke_callbacks(self._disconnect_callbacks, self)
 
     async def on_error(self, error: Exception) -> None:
-        await self.on_handler_event(self._error_handlers, self, error)
+        """Invoke error callbacks.
+
+        Args:
+            error: The exception that occurred
+        """
+        await self._invoke_callbacks(self._error_callbacks, self, error)
 
     def get_saved_promise(self, call_id: str) -> RpcPromise:
         """

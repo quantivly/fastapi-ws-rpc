@@ -203,37 +203,52 @@ class RpcConnectionConfig:
 class RpcBackpressureConfig:
     """Configuration for backpressure management and message limits.
 
-    Controls how many pending requests can queue up and the maximum size of
-    individual messages to prevent resource exhaustion.
+    Controls how many pending requests can queue up, limits on outgoing messages,
+    and the maximum size of individual messages to prevent resource exhaustion.
 
     Parameters
     ----------
     max_pending_requests : int, default 1000
-        Maximum number of pending RPC requests allowed before backpressure
+        Maximum number of pending incoming RPC requests allowed before backpressure
         is applied. New requests will block or fail when this limit is reached.
+        Prevents receive-side overwhelm.
     max_message_size : int, default 10485760
         Maximum size in bytes for a single message (default 10MB). Messages
         exceeding this size should be rejected or chunked.
+    max_send_queue_size : int, default 1000
+        Maximum number of pending outgoing messages before backpressure is applied.
+        Prevents send-side overwhelm and memory exhaustion from queued messages.
+        Set to 0 to disable send backpressure. Default: 1000.
 
     Examples
     --------
     >>> # Conservative limits for high-traffic production
     >>> config = RpcBackpressureConfig(
     ...     max_pending_requests=500,
-    ...     max_message_size=5 * 1024 * 1024  # 5MB
+    ...     max_message_size=5 * 1024 * 1024,  # 5MB
+    ...     max_send_queue_size=500
     ... )
     >>> config.validate()
 
     >>> # Higher limits for development
     >>> config = RpcBackpressureConfig(
     ...     max_pending_requests=2000,
-    ...     max_message_size=20 * 1024 * 1024  # 20MB
+    ...     max_message_size=20 * 1024 * 1024,  # 20MB
+    ...     max_send_queue_size=2000
+    ... )
+    >>> config.validate()
+
+    >>> # Disable send backpressure
+    >>> config = RpcBackpressureConfig(
+    ...     max_pending_requests=1000,
+    ...     max_send_queue_size=0  # Disabled
     ... )
     >>> config.validate()
     """
 
     max_pending_requests: int = 1000
     max_message_size: int = 10 * 1024 * 1024  # 10MB
+    max_send_queue_size: int = 1000
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization.
@@ -241,7 +256,8 @@ class RpcBackpressureConfig:
         Raises
         ------
         ValueError
-            If max_pending_requests or max_message_size are not positive.
+            If max_pending_requests or max_message_size are not positive,
+            or if max_send_queue_size is negative.
         """
         if self.max_pending_requests <= 0:
             raise ValueError(
@@ -251,6 +267,11 @@ class RpcBackpressureConfig:
         if self.max_message_size <= 0:
             raise ValueError(
                 f"max_message_size must be positive, got {self.max_message_size}"
+            )
+
+        if self.max_send_queue_size < 0:
+            raise ValueError(
+                f"max_send_queue_size must be non-negative (0 to disable), got {self.max_send_queue_size}"
             )
 
     def validate(self) -> None:
