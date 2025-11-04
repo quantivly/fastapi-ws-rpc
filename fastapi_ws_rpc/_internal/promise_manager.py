@@ -33,6 +33,10 @@ DEFAULT_PROMISE_TTL = 300.0  # 5 minutes
 # Cleanup interval for expired promises (in seconds)
 PROMISE_CLEANUP_INTERVAL = 60.0  # 1 minute
 
+# Maximum allowed length for request IDs (in characters)
+# Prevents DoS attacks via extremely long ID strings
+MAX_REQUEST_ID_LENGTH = 256
+
 
 class RpcPromise:
     """
@@ -172,6 +176,14 @@ class RpcPromiseManager:
         self._ensure_cleanup_task_started()
 
         call_id = str(request.id) if request.id is not None else ""
+
+        # Validate request ID length to prevent DoS attacks
+        if len(call_id) > MAX_REQUEST_ID_LENGTH:
+            raise ValueError(
+                f"Request ID too long: {len(call_id)} characters "
+                f"(maximum allowed: {MAX_REQUEST_ID_LENGTH}). "
+                f"This may indicate a malicious or buggy client."
+            )
 
         # Check backpressure limit BEFORE creating the promise
         if len(self._requests) >= self._max_pending_requests:
@@ -326,9 +338,10 @@ class RpcPromiseManager:
             return 0
 
         current_time = time.time()
+        # Create snapshot to avoid RuntimeError if dict is modified during iteration
         expired_ids = [
             call_id
-            for call_id, promise in self._requests.items()
+            for call_id, promise in list(self._requests.items())
             if current_time - promise.created_at > self._promise_ttl
         ]
 

@@ -34,7 +34,7 @@ from fastapi_ws_rpc.schemas import (
 # ============================================================================
 
 
-class TestMethods(RpcMethodsBase):
+class ProtocolTestMethods(RpcMethodsBase):
     """Test methods class for protocol handler testing."""
 
     async def add(self, a: int, b: int) -> int:
@@ -69,13 +69,13 @@ class TestMethods(RpcMethodsBase):
 
 
 @pytest.fixture
-def test_methods() -> TestMethods:
+def test_methods() -> ProtocolTestMethods:
     """Create test methods instance."""
-    return TestMethods()
+    return ProtocolTestMethods()
 
 
 @pytest.fixture
-def method_invoker(test_methods: TestMethods) -> RpcMethodInvoker:
+def method_invoker(test_methods: ProtocolTestMethods) -> RpcMethodInvoker:
     """Create method invoker."""
     return RpcMethodInvoker(test_methods)
 

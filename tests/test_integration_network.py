@@ -32,7 +32,7 @@ from fastapi_ws_rpc.schemas import JsonRpcRequest, JsonRpcResponse
 # ============================================================================
 
 
-class TestMethods(RpcMethodsBase):
+class NetworkTestMethods(RpcMethodsBase):
     """Test methods for network integration testing."""
 
     def __init__(self) -> None:
@@ -60,13 +60,13 @@ class TestMethods(RpcMethodsBase):
 
 
 @pytest.fixture
-def test_methods() -> TestMethods:
+def test_methods() -> NetworkTestMethods:
     """Create test methods instance."""
-    return TestMethods()
+    return NetworkTestMethods()
 
 
 @pytest.fixture
-def method_invoker(test_methods: TestMethods) -> RpcMethodInvoker:
+def method_invoker(test_methods: NetworkTestMethods) -> RpcMethodInvoker:
     """Create method invoker."""
     return RpcMethodInvoker(test_methods)
 
@@ -200,7 +200,7 @@ class TestGracefulDisconnect:
 
     @pytest.mark.asyncio
     async def test_disconnect_cleanup_callbacks(
-        self, test_methods: TestMethods, mock_socket: MagicMock
+        self, test_methods: NetworkTestMethods, mock_socket: MagicMock
     ) -> None:
         """
         Test that disconnect callbacks are called during cleanup.
@@ -402,7 +402,7 @@ class TestTimeoutBehavior:
 
     @pytest.mark.asyncio
     async def test_idle_timeout_simulation(
-        self, test_methods: TestMethods, mock_socket: MagicMock
+        self, test_methods: NetworkTestMethods, mock_socket: MagicMock
     ) -> None:
         """
         Test idle timeout behavior (connection timeout due to inactivity).
@@ -555,7 +555,9 @@ class TestConnectionDrop:
     """Test connection drops during active operations."""
 
     @pytest.mark.asyncio
-    async def test_connection_drop_during_send(self, test_methods: TestMethods) -> None:
+    async def test_connection_drop_during_send(
+        self, test_methods: NetworkTestMethods
+    ) -> None:
         """
         Test connection drop during message send.
 
@@ -680,7 +682,7 @@ class TestWebSocketClose:
 
     @pytest.mark.asyncio
     async def test_normal_websocket_close(
-        self, test_methods: TestMethods, mock_socket: MagicMock
+        self, test_methods: NetworkTestMethods, mock_socket: MagicMock
     ) -> None:
         """
         Test normal WebSocket close (code 1000).
@@ -703,7 +705,7 @@ class TestWebSocketClose:
 
     @pytest.mark.asyncio
     async def test_abnormal_websocket_close(
-        self, test_methods: TestMethods, mock_socket: MagicMock
+        self, test_methods: NetworkTestMethods, mock_socket: MagicMock
     ) -> None:
         """
         Test abnormal WebSocket close (connection error).
@@ -731,7 +733,7 @@ class TestWebSocketClose:
 
     @pytest.mark.asyncio
     async def test_websocket_close_with_pending_messages(
-        self, test_methods: TestMethods, mock_socket: MagicMock
+        self, test_methods: NetworkTestMethods, mock_socket: MagicMock
     ) -> None:
         """
         Test WebSocket close while messages are queued.
@@ -810,7 +812,7 @@ class TestReconnectionScenarios:
 
     @pytest.mark.asyncio
     async def test_new_channel_after_disconnect(
-        self, test_methods: TestMethods, mock_socket: MagicMock
+        self, test_methods: NetworkTestMethods, mock_socket: MagicMock
     ) -> None:
         """
         Test creating new channel after previous one disconnected.
@@ -855,7 +857,7 @@ class TestErrorPropagation:
 
     @pytest.mark.asyncio
     async def test_error_callbacks_on_disconnect(
-        self, test_methods: TestMethods, mock_socket: MagicMock
+        self, test_methods: NetworkTestMethods, mock_socket: MagicMock
     ) -> None:
         """
         Test that error callbacks are invoked on network errors.

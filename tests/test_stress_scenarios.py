@@ -33,7 +33,7 @@ from fastapi_ws_rpc.utils import gen_uid
 # ============================================================================
 
 
-class TestMethods(RpcMethodsBase):
+class StressTestMethods(RpcMethodsBase):
     """Test methods for stress testing."""
 
     def __init__(self) -> None:
@@ -67,13 +67,13 @@ class TestMethods(RpcMethodsBase):
 
 
 @pytest.fixture
-def test_methods() -> TestMethods:
+def test_methods() -> StressTestMethods:
     """Create test methods instance."""
-    return TestMethods()
+    return StressTestMethods()
 
 
 @pytest.fixture
-def method_invoker(test_methods: TestMethods) -> RpcMethodInvoker:
+def method_invoker(test_methods: StressTestMethods) -> RpcMethodInvoker:
     """Create method invoker."""
     return RpcMethodInvoker(test_methods)
 
@@ -427,7 +427,7 @@ class TestLongRunningConnections:
         protocol_handler: RpcProtocolHandler,
         promise_manager: RpcPromiseManager,
         mock_send: AsyncMock,
-        test_methods: TestMethods,
+        test_methods: StressTestMethods,
     ) -> None:
         """
         Test connection stability over 5+ minutes with periodic messages.
@@ -620,7 +620,7 @@ class TestHighThroughput:
         self,
         protocol_handler: RpcProtocolHandler,
         mock_send: AsyncMock,
-        test_methods: TestMethods,
+        test_methods: StressTestMethods,
     ) -> None:
         """
         Test high-throughput request/response cycles.
@@ -668,7 +668,7 @@ class TestHighThroughput:
         self,
         protocol_handler: RpcProtocolHandler,
         mock_send: AsyncMock,
-        test_methods: TestMethods,
+        test_methods: StressTestMethods,
     ) -> None:
         """
         Test throughput with large message payloads.

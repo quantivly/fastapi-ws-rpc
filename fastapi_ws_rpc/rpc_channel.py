@@ -400,8 +400,26 @@ class RpcChannel:
             callbacks: List of callbacks to invoke
             *args: Positional arguments to pass to callbacks
             **kwargs: Keyword arguments to pass to callbacks
+
+        Notes
+        -----
+        Uses return_exceptions=True to ensure one failing callback doesn't
+        cancel others. Individual callback failures are logged but don't
+        propagate to prevent cascade failures.
         """
-        await asyncio.gather(*(callback(*args, **kwargs) for callback in callbacks))
+        results = await asyncio.gather(
+            *(callback(*args, **kwargs) for callback in callbacks),
+            return_exceptions=True,
+        )
+
+        # Log any callback failures without propagating them
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                callback_name = getattr(callbacks[i], "__name__", str(callbacks[i]))
+                logger.error(
+                    f"Callback {callback_name} failed: {type(result).__name__}: {result}",
+                    exc_info=True,
+                )
 
     async def on_connect(self) -> None:
         """

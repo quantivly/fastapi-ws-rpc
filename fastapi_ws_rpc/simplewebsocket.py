@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
-from typing import Any, TypeVar
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from .exceptions import RpcMessageTooLargeError
 from .logger import get_logger
@@ -20,6 +20,39 @@ T = TypeVar("T")
 # Default maximum message size: 10MB
 # This prevents DoS attacks via extremely large JSON payloads
 DEFAULT_MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+@runtime_checkable
+class SerializingSocketProtocol(Protocol):
+    """
+    Protocol for WebSocket wrapper classes that support JSON serialization.
+
+    This protocol defines the interface for socket wrapper classes that can
+    optionally accept a max_message_size parameter during initialization.
+    It enables type-safe usage of different serializing socket implementations.
+
+    Notes
+    -----
+    This protocol is used to type-hint socket classes that may or may not
+    support the max_message_size parameter, allowing graceful fallback.
+    """
+
+    def __init__(
+        self,
+        websocket: Any,
+        max_message_size: int = DEFAULT_MAX_MESSAGE_SIZE,
+    ) -> None:
+        """
+        Initialize the serializing socket with an optional message size limit.
+
+        Parameters
+        ----------
+        websocket : Any
+            The underlying WebSocket connection.
+        max_message_size : int, optional
+            Maximum allowed message size in bytes.
+        """
+        ...
 
 
 class SimpleWebSocket(ABC):

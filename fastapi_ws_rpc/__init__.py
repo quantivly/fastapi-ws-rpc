@@ -53,7 +53,11 @@ from fastapi_ws_rpc.schemas import (
 )
 
 # WebSocket abstractions (for advanced usage)
-from fastapi_ws_rpc.simplewebsocket import JsonSerializingWebSocket, SimpleWebSocket
+from fastapi_ws_rpc.simplewebsocket import (
+    JsonSerializingWebSocket,
+    SerializingSocketProtocol,
+    SimpleWebSocket,
+)
 
 # Utility functions
 from fastapi_ws_rpc.utils import gen_uid
@@ -90,6 +94,7 @@ __all__ = [
     "RpcMethodsBase",
     "RpcRetryConfig",
     "RpcUtilityMethods",
+    "SerializingSocketProtocol",
     "SimpleWebSocket",
     "SocketProtocol",
     "UnknownMethodError",

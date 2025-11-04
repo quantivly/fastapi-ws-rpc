@@ -242,6 +242,19 @@ class WebSocketRpcClient:
                     f"Creating WebSocket connection to {self.uri} without subprotocol negotiation"
                 )
 
+            # Add compression to connect_kwargs if configured
+            # The websockets library supports permessage-deflate extension natively
+            if self.config.websocket and self.config.websocket.compression:
+                connect_kwargs["compression"] = self.config.websocket.compression
+                logger.debug(
+                    f"Enabling WebSocket compression: {self.config.websocket.compression} "
+                    f"(threshold: {self.config.websocket.compression_threshold} bytes)"
+                )
+            else:
+                # Explicitly disable compression if not configured
+                connect_kwargs["compression"] = None
+                logger.debug("WebSocket compression disabled")
+
             logger.debug(f"Connection parameters: {connect_kwargs}")
             raw_ws = await websockets.connect(self.uri, **connect_kwargs)
 
@@ -552,8 +565,9 @@ class WebSocketRpcClient:
                 logger.info("Connection was terminated.")
 
             # Signal closed state and trigger full cleanup
+            # Use create_task to avoid reader task waiting for its own cancellation
             self._connection_closed.set()
-            await self.close()
+            asyncio.create_task(self.close())
 
         except (ValidationError, ValueError, TypeError, RuntimeError, KeyError) as e:
             # Message processing errors indicate protocol violations or bugs:

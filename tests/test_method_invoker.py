@@ -27,7 +27,7 @@ from fastapi_ws_rpc.schemas import JsonRpcErrorCode
 # ============================================================================
 
 
-class TestMethods(RpcMethodsBase):
+class InvokerTestMethods(RpcMethodsBase):
     """Test methods class with various method signatures for testing."""
 
     def __init__(self) -> None:
@@ -87,13 +87,13 @@ class TestMethods(RpcMethodsBase):
 
 
 @pytest.fixture
-def test_methods() -> TestMethods:
+def test_methods() -> InvokerTestMethods:
     """Create a test methods instance."""
-    return TestMethods()
+    return InvokerTestMethods()
 
 
 @pytest.fixture
-def method_invoker(test_methods: TestMethods) -> RpcMethodInvoker:
+def method_invoker(test_methods: InvokerTestMethods) -> RpcMethodInvoker:
     """Create a method invoker with test methods."""
     return RpcMethodInvoker(test_methods)
 
@@ -295,7 +295,7 @@ class TestReturnTypeHandling:
 
     @pytest.mark.asyncio
     async def test_get_return_type_with_annotation(
-        self, method_invoker: RpcMethodInvoker, test_methods: TestMethods
+        self, method_invoker: RpcMethodInvoker, test_methods: InvokerTestMethods
     ) -> None:
         """
         Test getting return type from method with type annotation.
@@ -315,7 +315,7 @@ class TestReturnTypeHandling:
 
     @pytest.mark.asyncio
     async def test_get_return_type_without_annotation(
-        self, method_invoker: RpcMethodInvoker, test_methods: TestMethods
+        self, method_invoker: RpcMethodInvoker, test_methods: InvokerTestMethods
     ) -> None:
         """
         Test getting return type from method without annotation.
@@ -424,7 +424,7 @@ class TestMethodInvocation:
 
     @pytest.mark.asyncio
     async def test_invoke_method_returning_noresponse(
-        self, method_invoker: RpcMethodInvoker, test_methods: TestMethods
+        self, method_invoker: RpcMethodInvoker, test_methods: InvokerTestMethods
     ) -> None:
         """
         Test invoking method that returns NoResponse sentinel.
@@ -593,7 +593,7 @@ class TestIntegration:
 
     @pytest.mark.asyncio
     async def test_multiple_invocations(
-        self, method_invoker: RpcMethodInvoker, test_methods: TestMethods
+        self, method_invoker: RpcMethodInvoker, test_methods: InvokerTestMethods
     ) -> None:
         """
         Test multiple invocations of different methods.

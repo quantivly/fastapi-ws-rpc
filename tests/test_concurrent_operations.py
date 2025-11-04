@@ -31,7 +31,7 @@ from fastapi_ws_rpc.schemas import JsonRpcRequest, JsonRpcResponse
 # ============================================================================
 
 
-class TestMethods(RpcMethodsBase):
+class ConcurrentTestMethods(RpcMethodsBase):
     """Test methods for concurrent testing."""
 
     def __init__(self) -> None:
@@ -68,13 +68,13 @@ class TestMethods(RpcMethodsBase):
 
 
 @pytest.fixture
-def test_methods() -> TestMethods:
+def test_methods() -> ConcurrentTestMethods:
     """Create test methods instance."""
-    return TestMethods()
+    return ConcurrentTestMethods()
 
 
 @pytest.fixture
-def method_invoker(test_methods: TestMethods) -> RpcMethodInvoker:
+def method_invoker(test_methods: ConcurrentTestMethods) -> RpcMethodInvoker:
     """Create method invoker."""
     return RpcMethodInvoker(test_methods)
 
@@ -172,7 +172,7 @@ class TestParallelRequests:
 
     @pytest.mark.asyncio
     async def test_parallel_slow_requests(
-        self, protocol_handler: RpcProtocolHandler, test_methods: TestMethods
+        self, protocol_handler: RpcProtocolHandler, test_methods: ConcurrentTestMethods
     ) -> None:
         """
         Test multiple parallel slow requests.
@@ -525,7 +525,7 @@ class TestConcurrentProtocolHandling:
         self,
         protocol_handler: RpcProtocolHandler,
         mock_send: AsyncMock,
-        test_methods: TestMethods,
+        test_methods: ConcurrentTestMethods,
     ) -> None:
         """
         Test handling multiple concurrent requests.

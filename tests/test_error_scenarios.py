@@ -33,8 +33,8 @@ from fastapi_ws_rpc.schemas import JsonRpcErrorCode, JsonRpcRequest, JsonRpcResp
 # ============================================================================
 
 
-class TestMethods(RpcMethodsBase):
-    """Test methods for error scenario testing."""
+class ErrorScenarioMethods(RpcMethodsBase):
+    """RPC methods for error scenario testing."""
 
     async def fast_method(self) -> str:
         """Fast method for testing."""
@@ -56,13 +56,13 @@ class TestMethods(RpcMethodsBase):
 
 
 @pytest.fixture
-def test_methods() -> TestMethods:
+def test_methods() -> ErrorScenarioMethods:
     """Create test methods instance."""
-    return TestMethods()
+    return ErrorScenarioMethods()
 
 
 @pytest.fixture
-def method_invoker(test_methods: TestMethods) -> RpcMethodInvoker:
+def method_invoker(test_methods: ErrorScenarioMethods) -> RpcMethodInvoker:
     """Create method invoker."""
     return RpcMethodInvoker(test_methods)
 
@@ -255,7 +255,7 @@ class TestSendBackpressure:
         mock_socket.close = AsyncMock()
 
         # Create channel with low send queue limit
-        test_methods = TestMethods()
+        test_methods = ErrorScenarioMethods()
         channel = RpcChannel(
             test_methods,
             mock_socket,
@@ -302,7 +302,7 @@ class TestSendBackpressure:
         mock_socket.close = AsyncMock()
 
         # Create channel with backpressure disabled
-        test_methods = TestMethods()
+        test_methods = ErrorScenarioMethods()
         channel = RpcChannel(
             test_methods,
             mock_socket,
@@ -336,7 +336,7 @@ class TestSendBackpressure:
         mock_socket.close = AsyncMock()
 
         # Create channel with low limit
-        test_methods = TestMethods()
+        test_methods = ErrorScenarioMethods()
         channel = RpcChannel(
             test_methods,
             mock_socket,
@@ -372,7 +372,7 @@ class TestSendBackpressure:
         mock_socket.send = AsyncMock()
         mock_socket.close = AsyncMock()
 
-        test_methods = TestMethods()
+        test_methods = ErrorScenarioMethods()
         channel = RpcChannel(
             test_methods,
             mock_socket,
@@ -411,7 +411,7 @@ class TestSendBackpressure:
         mock_socket.send = AsyncMock(side_effect=blocking_send)
         mock_socket.close = AsyncMock()
 
-        test_methods = TestMethods()
+        test_methods = ErrorScenarioMethods()
         channel = RpcChannel(
             test_methods,
             mock_socket,
