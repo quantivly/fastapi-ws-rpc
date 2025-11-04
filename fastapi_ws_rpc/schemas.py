@@ -1,9 +1,12 @@
 from enum import Enum
 from typing import Any, Optional, TypeVar, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 UUID = str
+
+# Maximum length for request ID strings (prevents memory issues)
+MAX_REQUEST_ID_LENGTH = 256
 
 
 # JSON-RPC 2.0 Error Codes (as defined in the spec)
@@ -99,6 +102,48 @@ class JsonRpcRequest(BaseModel):
     id: Optional[Union[str, int]] = None
     method: str
     params: Optional[dict[str, Any]] = None
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, v: Union[str, int, None]) -> Union[str, int, None]:
+        """Validate request ID format and constraints.
+
+        JSON-RPC 2.0 spec allows string, number, or null.
+        We impose reasonable limits to prevent abuse:
+        - String IDs: 1-256 characters (no empty strings)
+        - Integer IDs: non-negative (>= 0)
+        - null: allowed for notifications
+
+        Parameters
+        ----------
+        v : str | int | None
+            The request ID value to validate
+
+        Returns
+        -------
+        str | int | None
+            The validated request ID
+
+        Raises
+        ------
+        ValueError
+            If the ID fails validation (empty string, too long, negative int)
+        """
+        if v is None:
+            return v  # Notifications allowed
+
+        if isinstance(v, str):
+            if len(v) == 0:
+                raise ValueError("Request ID string cannot be empty")
+            if len(v) > MAX_REQUEST_ID_LENGTH:
+                raise ValueError(
+                    f"Request ID string cannot exceed {MAX_REQUEST_ID_LENGTH} characters"
+                )
+        elif isinstance(v, int):
+            if v < 0:
+                raise ValueError("Request ID integer must be non-negative")
+
+        return v
 
 
 class JsonRpcError(BaseModel):

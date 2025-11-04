@@ -94,12 +94,24 @@ class RpcProtocolHandler:
             # Unknown message format
             raise ValueError(f"Unknown message format: {data}")
 
-        except ValidationError as e:
+        except (ValidationError, ValueError) as e:
             logger.error(
                 "Failed to parse JSON-RPC message", {"message": data, "error": e}
             )
-            # Cannot send error response without request ID
-            raise
+            # Send error response with id: null (per JSON-RPC 2.0 spec)
+            # Try to extract request ID if available, otherwise use None
+            request_id = data.get("id") if isinstance(data, dict) else None
+
+            # Determine appropriate error code
+            if isinstance(e, ValueError):
+                error_code = JsonRpcErrorCode.INVALID_REQUEST
+                error_msg = str(e)
+            else:  # ValidationError
+                error_code = JsonRpcErrorCode.PARSE_ERROR
+                error_msg = f"Invalid request format: {e!s}"
+
+            await self.send_error(request_id, error_code, error_msg)
+            return
 
     async def handle_request(self, request: JsonRpcRequest) -> None:
         """
@@ -235,7 +247,7 @@ class RpcProtocolHandler:
 
     async def send_error(
         self,
-        request_id: str | int,
+        request_id: str | int | None,
         error_code: JsonRpcErrorCode,
         message: str,
         data: dict[str, Any] | None = None,
@@ -243,21 +255,43 @@ class RpcProtocolHandler:
         """
         Send a JSON-RPC 2.0 error response.
 
+        Per JSON-RPC 2.0 spec, error responses can have id: null when
+        the request ID cannot be determined (e.g., parse errors).
+
         Args:
-            request_id: The request ID to respond to
+            request_id: The request ID to respond to, or None for parse errors
             error_code: The JSON-RPC error code
             message: Human-readable error message
             data: Optional additional error data
 
+        Note:
+            When request_id is None, the response will include "id": null
+            as required by JSON-RPC 2.0 for parse and invalid request errors.
+
         Example:
             ```python
+            # Normal error response
             await handler.send_error(
                 "123",
                 JsonRpcErrorCode.METHOD_NOT_FOUND,
                 "Method 'foo' not found"
             )
+
+            # Parse error with no request ID
+            await handler.send_error(
+                None,
+                JsonRpcErrorCode.PARSE_ERROR,
+                "Invalid JSON"
+            )
             ```
         """
         error = JsonRpcError(code=error_code.value, message=message, data=data)
         response = JsonRpcResponse(jsonrpc="2.0", id=request_id, error=error)
-        await self._send(response.model_dump(exclude_none=True))
+        response_dict = response.model_dump(exclude_none=True)
+
+        # When request_id is None, explicitly include "id": null in response
+        # (exclude_none=True would remove it, but JSON-RPC 2.0 requires it)
+        if request_id is None:
+            response_dict["id"] = None
+
+        await self._send(response_dict)

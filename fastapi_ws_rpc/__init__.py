@@ -5,6 +5,9 @@ A production-ready WebSocket RPC implementation for FastAPI applications.
 Supports bidirectional JSON-RPC 2.0 communication over WebSockets.
 """
 
+# Protocol definitions
+from fastapi_ws_rpc._internal.protocols import SocketProtocol
+
 # Core RPC classes
 # Connection management
 # Configuration classes
@@ -85,6 +88,7 @@ __all__ = [
     "RpcRetryConfig",
     "RpcUtilityMethods",
     "SimpleWebSocket",
+    "SocketProtocol",
     "UnknownMethodError",
     "WebSocketFrameType",
     "WebSocketRpcClient",

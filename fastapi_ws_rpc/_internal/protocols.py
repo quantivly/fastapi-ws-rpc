@@ -7,10 +7,117 @@ rather than concrete implementations, enabling loose coupling and better testabi
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ..schemas import JsonRpcResponse
+
+
+@runtime_checkable
+class SocketProtocol(Protocol):
+    """
+    Protocol defining the interface for WebSocket-like objects.
+
+    This protocol defines the minimal interface required for WebSocket objects
+    used by the RPC system. It ensures consistent behavior across different
+    WebSocket implementations (websockets library, FastAPI WebSocket, etc.).
+
+    The protocol is runtime-checkable, allowing isinstance() checks for validation.
+
+    Examples
+    --------
+    Check if an object implements the socket protocol:
+
+    >>> if isinstance(my_socket, SocketProtocol):
+    ...     await my_socket.send("message")
+
+    Type hint a function accepting any socket implementation:
+
+    >>> async def handle_socket(socket: SocketProtocol) -> None:
+    ...     message = await socket.recv()
+    ...     await socket.send(f"Echo: {message}")
+    ...     await socket.close()
+
+    See Also
+    --------
+    SimpleWebSocket : Abstract base class that implements this protocol.
+    JsonSerializingWebSocket : Concrete implementation with JSON serialization.
+    """
+
+    async def send(self, message: Any) -> None:
+        """
+        Send a message over the socket.
+
+        Parameters
+        ----------
+        message : Any
+            The message to send. Type depends on the implementation
+            (e.g., str for text frames, bytes for binary frames, or serialized objects).
+
+        Notes
+        -----
+        This method should handle any necessary buffering or encoding internally.
+        If the socket is closed, this should raise an appropriate exception.
+        """
+        ...
+
+    async def recv(self) -> Any:
+        """
+        Receive a message from the socket.
+
+        Returns
+        -------
+        Any
+            The received message. Type depends on the implementation
+            (e.g., str, bytes, or deserialized objects).
+            This method blocks until a message is available.
+
+        Notes
+        -----
+        This method should handle any necessary buffering or decoding internally.
+        If the socket is closed or an error occurs, it should raise an appropriate exception.
+        """
+        ...
+
+    async def close(self, code: int = 1000) -> None:
+        """
+        Close the socket connection.
+
+        Parameters
+        ----------
+        code : int, optional
+            WebSocket close code (default is 1000 for normal closure).
+            Standard close codes include:
+            - 1000: Normal closure
+            - 1001: Going away
+            - 1002: Protocol error
+            - 1003: Unsupported data
+            - 1011: Internal error
+
+        Notes
+        -----
+        After calling close(), no further send() or recv() calls should be made.
+        The implementation should ensure proper cleanup of resources.
+        """
+        ...
+
+    @property
+    def closed(self) -> bool:
+        """
+        Check if the socket is closed.
+
+        Returns
+        -------
+        bool
+            True if the socket is closed, False if it's open.
+
+        Notes
+        -----
+        This property should reflect the actual state of the connection.
+        It should return True after close() is called or if the connection
+        was closed by the remote endpoint.
+        """
+        ...
 
 
 class RpcPromise(Protocol):

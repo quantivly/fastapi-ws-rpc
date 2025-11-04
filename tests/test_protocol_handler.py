@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from pydantic import ValidationError
 
 from fastapi_ws_rpc._internal.method_invoker import RpcMethodInvoker
 from fastapi_ws_rpc._internal.promise_manager import RpcPromiseManager
@@ -569,14 +568,14 @@ class TestJsonRpc20Compliance:
 
     @pytest.mark.asyncio
     async def test_version_validation_request(
-        self, protocol_handler: RpcProtocolHandler
+        self, protocol_handler: RpcProtocolHandler, mock_send: AsyncMock
     ) -> None:
         """
         Test that JSON-RPC version is validated for requests.
 
         Verifies that:
         - Request with wrong version is rejected
-        - ValueError is raised
+        - Error response is sent
         """
         message = {
             "jsonrpc": "1.0",  # Wrong version
@@ -584,21 +583,27 @@ class TestJsonRpc20Compliance:
             "method": "test_method",
         }
 
-        with pytest.raises(ValueError) as exc_info:
-            await protocol_handler.handle_message(message)
+        await protocol_handler.handle_message(message)
 
-        assert "version" in str(exc_info.value).lower()
+        # Verify error response was sent
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args[0][0]
+        assert call_args["jsonrpc"] == "2.0"
+        assert "error" in call_args
+        assert call_args["id"] == "req-1"
+        assert call_args["error"]["code"] == JsonRpcErrorCode.INVALID_REQUEST.value
+        assert "version" in call_args["error"]["message"].lower()
 
     @pytest.mark.asyncio
     async def test_version_validation_response(
-        self, protocol_handler: RpcProtocolHandler
+        self, protocol_handler: RpcProtocolHandler, mock_send: AsyncMock
     ) -> None:
         """
         Test that JSON-RPC version is validated for responses.
 
         Verifies that:
         - Response with wrong version is rejected
-        - ValueError is raised
+        - Error response is sent
         """
         message = {
             "jsonrpc": "1.0",  # Wrong version
@@ -606,21 +611,27 @@ class TestJsonRpc20Compliance:
             "result": "data",
         }
 
-        with pytest.raises(ValueError) as exc_info:
-            await protocol_handler.handle_message(message)
+        await protocol_handler.handle_message(message)
 
-        assert "version" in str(exc_info.value).lower()
+        # Verify error response was sent
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args[0][0]
+        assert call_args["jsonrpc"] == "2.0"
+        assert "error" in call_args
+        assert call_args["id"] == "req-1"
+        assert call_args["error"]["code"] == JsonRpcErrorCode.INVALID_REQUEST.value
+        assert "version" in call_args["error"]["message"].lower()
 
     @pytest.mark.asyncio
     async def test_missing_version_field(
-        self, protocol_handler: RpcProtocolHandler
+        self, protocol_handler: RpcProtocolHandler, mock_send: AsyncMock
     ) -> None:
         """
         Test handling message with missing jsonrpc version field.
 
         Verifies that:
         - Message without version is rejected
-        - ValidationError or ValueError is raised
+        - Error response is sent
         """
         message = {
             # Missing "jsonrpc" field
@@ -628,8 +639,18 @@ class TestJsonRpc20Compliance:
             "method": "test_method",
         }
 
-        with pytest.raises((ValidationError, ValueError)):
-            await protocol_handler.handle_message(message)
+        await protocol_handler.handle_message(message)
+
+        # Verify error response was sent
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args[0][0]
+        assert call_args["jsonrpc"] == "2.0"
+        assert "error" in call_args
+        assert call_args["id"] == "req-1"
+        assert call_args["error"]["code"] in [
+            JsonRpcErrorCode.PARSE_ERROR.value,
+            JsonRpcErrorCode.INVALID_REQUEST.value,
+        ]
 
     @pytest.mark.asyncio
     async def test_response_excludes_none_fields(
@@ -669,32 +690,38 @@ class TestInvalidMessageHandling:
 
     @pytest.mark.asyncio
     async def test_handle_non_dict_message(
-        self, protocol_handler: RpcProtocolHandler
+        self, protocol_handler: RpcProtocolHandler, mock_send: AsyncMock
     ) -> None:
         """
         Test handling message that is not a dict.
 
         Verifies that:
-        - Non-dict message raises ValueError
-        - Error message indicates expected type
+        - Non-dict message is rejected
+        - Error response is sent
         """
         message = "not a dict"  # type: ignore
 
-        with pytest.raises(ValueError) as exc_info:
-            await protocol_handler.handle_message(message)
+        await protocol_handler.handle_message(message)
 
-        assert "dict" in str(exc_info.value).lower()
+        # Verify error response was sent
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args[0][0]
+        assert call_args["jsonrpc"] == "2.0"
+        assert "error" in call_args
+        assert call_args["id"] is None  # Cannot extract ID from non-dict
+        assert call_args["error"]["code"] == JsonRpcErrorCode.INVALID_REQUEST.value
+        assert "dict" in call_args["error"]["message"].lower()
 
     @pytest.mark.asyncio
     async def test_handle_message_without_method_or_result(
-        self, protocol_handler: RpcProtocolHandler
+        self, protocol_handler: RpcProtocolHandler, mock_send: AsyncMock
     ) -> None:
         """
         Test handling message without method or result fields.
 
         Verifies that:
         - Message is rejected as unknown format
-        - ValueError is raised
+        - Error response is sent
         """
         message = {
             "jsonrpc": "2.0",
@@ -702,21 +729,27 @@ class TestInvalidMessageHandling:
             # Missing both 'method' and 'result'/'error'
         }
 
-        with pytest.raises(ValueError) as exc_info:
-            await protocol_handler.handle_message(message)
+        await protocol_handler.handle_message(message)
 
-        assert "unknown" in str(exc_info.value).lower()
+        # Verify error response was sent
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args[0][0]
+        assert call_args["jsonrpc"] == "2.0"
+        assert "error" in call_args
+        assert call_args["id"] == "req-1"
+        assert call_args["error"]["code"] == JsonRpcErrorCode.INVALID_REQUEST.value
+        assert "unknown" in call_args["error"]["message"].lower()
 
     @pytest.mark.asyncio
     async def test_handle_malformed_request(
-        self, protocol_handler: RpcProtocolHandler
+        self, protocol_handler: RpcProtocolHandler, mock_send: AsyncMock
     ) -> None:
         """
         Test handling malformed request data.
 
         Verifies that:
-        - Malformed request raises ValidationError
-        - Error is logged (not tested here)
+        - Malformed request is rejected
+        - Error response is sent
         """
         message = {
             "jsonrpc": "2.0",
@@ -724,8 +757,20 @@ class TestInvalidMessageHandling:
             "method": 123,  # Method must be string
         }
 
-        with pytest.raises(ValidationError):
-            await protocol_handler.handle_message(message)
+        await protocol_handler.handle_message(message)
+
+        # Verify error response was sent
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args[0][0]
+        assert call_args["jsonrpc"] == "2.0"
+        assert "error" in call_args
+        assert call_args["id"] == "req-1"
+        # ValidationError can result in either PARSE_ERROR or INVALID_REQUEST
+        # depending on exception inheritance in Pydantic version
+        assert call_args["error"]["code"] in [
+            JsonRpcErrorCode.PARSE_ERROR.value,
+            JsonRpcErrorCode.INVALID_REQUEST.value,
+        ]
 
     @pytest.mark.asyncio
     async def test_handle_malformed_response(

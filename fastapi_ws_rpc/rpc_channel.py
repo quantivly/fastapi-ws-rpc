@@ -118,6 +118,7 @@ class RpcChannel:
         self._max_connection_duration = max_connection_duration
         self._connection_start_time = asyncio.get_event_loop().time()
         self._duration_watchdog_task: asyncio.Task[None] | None = None
+        self._closing = False  # Flag to prevent concurrent close() calls
 
         # Start duration watchdog if limit is set
         if self._max_connection_duration is not None:
@@ -178,6 +179,9 @@ class RpcChannel:
         if self.is_closed():
             logger.debug(f"Channel {self.id} already closed, skipping")
             return None
+
+        # Set closing flag to prevent race conditions with watchdog
+        self._closing = True
 
         logger.debug(f"Closing channel {self.id}...")
 
@@ -533,11 +537,13 @@ class RpcChannel:
                 f"({self._max_connection_duration}s). Closing gracefully."
             )
 
-            # Trigger disconnect handlers
-            await self.on_disconnect()
-
-            # Close the channel
-            await self.close()
+            # Check if already closing to prevent race condition with external close() calls
+            if not self.is_closed() and not self._closing:
+                self._closing = True  # Set flag before triggering disconnect
+                # Trigger disconnect handlers
+                await self.on_disconnect()
+                # Close the channel
+                await self.close()
 
         except asyncio.CancelledError:
             # Normal cancellation during shutdown
