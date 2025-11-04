@@ -95,6 +95,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Set up coverage reporting with term-missing, HTML, and XML outputs
 - Updated GitHub Actions to use latest action versions (checkout@v4, setup-python@v5)
 
+### Known Limitations
+- **JSON-RPC 2.0 Batch Requests** - Batch requests (arrays of request objects) are not supported in v1.0.0. This feature is planned for v1.1.0. Workaround: Use `asyncio.gather()` for concurrent individual requests.
+
 ## [0.2.0] - 2024-10-30
 
 ### Changed

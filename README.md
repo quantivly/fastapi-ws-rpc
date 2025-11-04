@@ -219,6 +219,28 @@ See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
 - **Removed**: `requirements.txt` (use `pyproject.toml` for dependencies)
 - See [CHANGELOG.md](CHANGELOG.md) for complete migration details
 
+### Known Limitations
+
+#### JSON-RPC 2.0 Batch Requests
+
+Batch requests (arrays of request objects) are not currently supported in v1.0.0.
+This feature is planned for v1.1.0.
+
+**Workaround:** Send individual requests sequentially or use `asyncio.gather()` for concurrent execution.
+
+```python
+# Instead of batch request:
+# await channel.call_batch([...])
+
+# Use concurrent individual calls:
+results = await asyncio.gather(
+    channel.call("method1", {"a": 1}),
+    channel.call("method2", {"b": 2}),
+)
+```
+
+See [Issue #10](https://github.com/permitio/fastapi_websocket_rpc/issues) for implementation tracking.
+
 ## Pull Requests Welcome! 🎉
 
 - Please include tests for new features
