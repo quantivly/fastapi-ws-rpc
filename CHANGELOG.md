@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **JSON-RPC 2.0 positional parameters support**: Parameters can now be provided as arrays (positional format) in addition to objects (named format). Positional parameters are automatically mapped to method parameter names by position, providing full JSON-RPC 2.0 spec compliance.
+  - Updated `JsonRpcRequest.params` to accept `dict | list | None`
+  - Added parameter mapping logic in `RpcMethodInvoker.convert_params()`
+  - Comprehensive validation for parameter count mismatches and keyword-only parameters
+  - 8 new test cases covering edge cases (defaults, keyword-only params, error handling)
+
+### Fixed
+- **WebSocket close code validation**: Client now correctly identifies non-retryable WebSocket close codes (1002, 1003, 1007, 1008, 1011) and permanently closes the connection instead of attempting reconnection. This prevents infinite reconnection loops when the server explicitly rejects the connection due to protocol errors or policy violations.
+- **Backpressure deadlock prevention**: Added 1-second timeout to semaphore acquisition in `send()` method to prevent indefinite blocking under high throughput. Now raises `RpcBackpressureError` with clear diagnostic message when send queue is full.
+- **Ping timeout configuration**: Fixed default `ping_timeout` (now 60s) to be greater than `ping_interval` (30s) in production defaults, preventing false timeout disconnections.
+
 ### Breaking Changes
 - **Renamed class** - `WebsocketRPCEndpoint` → `WebSocketRpcEndpoint` for naming consistency with `WebSocketRpcClient`
 - **Exception hierarchy** - `RpcChannelClosedError` and `RemoteValueError` now inherit from `RpcError` base class instead of `Exception` and `ValueError` respectively

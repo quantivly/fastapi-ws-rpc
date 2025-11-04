@@ -911,6 +911,27 @@ class WebSocketRpcClient:
             # Signal closed state
             self._connection_closed.set()
 
+            # WebSocket close codes that indicate permanent failures (DO NOT reconnect)
+            # See RFC 6455 Section 7.4: https://www.rfc-editor.org/rfc/rfc6455.html#section-7.4
+            non_retryable_codes = {
+                1002,  # Protocol Error - implementation/protocol violation
+                1003,  # Unsupported Data - data type not acceptable
+                1007,  # Invalid frame payload data - inconsistent/malformed data
+                1008,  # Policy Violation - generic policy violation
+                1011,  # Internal Error - unexpected server condition
+            }
+
+            # Check if close code indicates a permanent failure
+            if self._close_code in non_retryable_codes:
+                logger.error(
+                    f"Connection closed with non-retryable code {self._close_code}: {self._close_reason}. "
+                    "This indicates a permanent failure (protocol error, policy violation, etc.). "
+                    "Will NOT attempt reconnection."
+                )
+                # Close permanently - server explicitly rejected connection
+                asyncio.create_task(self.close())
+                return
+
             # Decide whether to reconnect or close permanently
             if self.config.connection.auto_reconnect:
                 # Attempt automatic reconnection with exponential backoff
