@@ -7,6 +7,14 @@ Supports bidirectional JSON-RPC 2.0 communication over WebSockets.
 
 # Core RPC classes
 # Connection management
+# Configuration classes
+from fastapi_ws_rpc.config import (
+    RpcBackpressureConfig,
+    RpcConnectionConfig,
+    RpcKeepaliveConfig,
+    RpcRetryConfig,
+    WebSocketRpcClientConfig,
+)
 from fastapi_ws_rpc.connection_manager import ConnectionManager
 
 # Exceptions
@@ -50,36 +58,37 @@ from fastapi_ws_rpc.websocket_rpc_endpoint import WebSocketRpcEndpoint
 __version__ = "0.1.0"
 
 __all__ = [
+    # Core components
     "ConnectionManager",
     "JsonRpcError",
     "JsonRpcErrorCode",
-    # JSON-RPC schemas
     "JsonRpcRequest",
     "JsonRpcResponse",
     "JsonSerializingWebSocket",
     "LoggingModes",
-    # Utilities
     "NoResponse",
-    # Type aliases for callbacks
     "OnConnectCallback",
     "OnDisconnectCallback",
     "OnErrorCallback",
     "RemoteValueError",
+    # Configuration classes (v1.0.0+)
+    "RpcBackpressureConfig",
     "RpcBackpressureError",
-    # Core RPC classes
     "RpcChannel",
     "RpcChannelClosedError",
-    # Exceptions
+    "RpcConnectionConfig",
     "RpcError",
     "RpcInvalidStateError",
+    "RpcKeepaliveConfig",
     "RpcMessageTooLargeError",
     "RpcMethodsBase",
+    "RpcRetryConfig",
     "RpcUtilityMethods",
-    # WebSocket abstractions
     "SimpleWebSocket",
     "UnknownMethodError",
     "WebSocketFrameType",
     "WebSocketRpcClient",
+    "WebSocketRpcClientConfig",
     "WebSocketRpcEndpoint",
     "gen_uid",
     "get_logger",

@@ -6,6 +6,7 @@ import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, Header, WebSocket
 from websockets.exceptions import InvalidStatusCode
 
+from fastapi_ws_rpc.config import RpcConnectionConfig, WebSocketRpcClientConfig
 from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
 from fastapi_ws_rpc.utils import gen_uid
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
@@ -55,11 +56,14 @@ async def test_valid_token(server):
     """
     Test basic RPC with a simple echo
     """
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4),
+        websocket_kwargs={"additional_headers": [("X-TOKEN", SECRET_TOKEN)]},
+    )
     async with WebSocketRpcClient(
         uri,
         RpcUtilityMethods(),
-        default_response_timeout=4,
-        extra_headers=[("X-TOKEN", SECRET_TOKEN)],
+        config=config,
     ) as client:
         text = "Hello World!"
         response = await client.other.echo(text=text)
@@ -71,12 +75,15 @@ async def test_invalid_token(server):
     """
     Test basic RPC with a simple echo
     """
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4),
+        websocket_kwargs={"additional_headers": [("X-TOKEN", "bad-token")]},
+    )
     try:
         async with WebSocketRpcClient(
             uri,
             RpcUtilityMethods(),
-            default_response_timeout=4,
-            extra_headers=[("X-TOKEN", "bad-token")],
+            config=config,
         ) as client:
             assert client is not None
             # if we got here - the server didn't reject us

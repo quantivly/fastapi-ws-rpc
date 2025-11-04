@@ -21,6 +21,7 @@ from websockets.exceptions import (
 
 from ._internal.rpc_keepalive import RpcKeepalive
 from ._internal.rpc_retry import RpcRetryManager
+from .config import WebSocketRpcClientConfig
 from .exceptions import (
     RpcBackpressureError,
     RpcChannelClosedError,
@@ -30,6 +31,9 @@ from .logger import get_logger
 from .rpc_channel import OnConnectCallback, OnDisconnectCallback, RpcChannel
 from .rpc_methods import RpcMethodsBase
 from .simplewebsocket import JsonSerializingWebSocket, SimpleWebSocket
+
+# Type alias for error callbacks (will be used in future error handling refactor)
+OnErrorCallback = OnDisconnectCallback
 
 logger = get_logger(__name__)
 
@@ -47,29 +51,20 @@ class WebSocketRpcClient:
     - Expose methods that the server can call
     - Automatically reconnect with exponential backoff
     - Maintain connection with keep-alive pings
-    """
 
-    # RPC ping check settings for verifying connection after establishment
-    WAIT_FOR_INITIAL_CONNECTION = 1  # seconds
-    MAX_CONNECTION_ATTEMPTS = 5
-    # Default keep-alive failure threshold
-    DEFAULT_MAX_CONSECUTIVE_PING_FAILURES = 3
+    Configuration is provided through the WebSocketRpcClientConfig object,
+    which provides a clean, validated interface for all client settings.
+    """
 
     def __init__(
         self,
         uri: str,
         methods: RpcMethodsBase | None = None,
-        retry_config: dict[str, Any] | bool | None = None,
-        default_response_timeout: float | None = None,
+        config: WebSocketRpcClientConfig | None = None,
         on_connect: list[OnConnectCallback] | None = None,
         on_disconnect: list[OnDisconnectCallback] | None = None,
-        keep_alive: float = 0,
-        max_message_size: int | None = None,
-        max_pending_requests: int | None = None,
-        max_consecutive_ping_failures: int | None = None,
-        max_connection_duration: float | None = None,
+        on_error: list[OnErrorCallback] | None = None,
         serializing_socket_cls: type[SimpleWebSocket] = JsonSerializingWebSocket,
-        **kwargs: Any,
     ) -> None:
         """
         Initialize the WebSocketRpcClient.
@@ -78,44 +73,51 @@ class WebSocketRpcClient:
             uri: Server URI to connect to (e.g., 'ws://localhost/ws/client1')
             methods: RPC methods to expose to the server. Defaults to an empty
                 RpcMethodsBase.
-            retry_config: Configuration for tenacity retries. Can be:
-                - None: Use DEFAULT_RETRY_CONFIG
-                - False: Disable retries
-                - Dict: Custom retry configuration
-            default_response_timeout: Default timeout in seconds for RPC responses.
+            config: Configuration object for all client behavior. If None, uses
+                default configuration. Use WebSocketRpcClientConfig.production_defaults()
+                or .development_defaults() for common presets.
             on_connect: Callbacks executed when connection is established.
             on_disconnect: Callbacks executed when connection is lost.
-            keep_alive: Interval in seconds to send keep-alive pings.
-                        0 disables keep-alive.
-            max_message_size: Maximum allowed message size in bytes (default 10MB).
-                            Prevents DoS attacks via extremely large JSON payloads.
-            max_pending_requests: Maximum number of pending RPC requests (default 1000).
-                                Prevents resource exhaustion from request flooding.
-            max_consecutive_ping_failures: Maximum consecutive ping failures before
-                                          closing connection (default 3). Set to None
-                                          to disable auto-disconnect on ping failures.
-            max_connection_duration: Maximum time in seconds that the connection
-                                    can remain open. After this time, the connection
-                                    will be gracefully closed. None means no limit.
+            on_error: Callbacks executed when errors occur (currently maps to on_disconnect).
             serializing_socket_cls: Class for serializing/deserializing messages.
-            **kwargs: Additional arguments passed to websockets.connect()
-                      See: https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html
 
         Usage:
             ```python
+            # Using default config
             async with WebSocketRpcClient(uri, RpcUtilityMethods()) as client:
                 response = await client.call("echo", {'text': "Hello World!"})
                 print(response)
+
+            # Using production config with custom settings
+            from fastapi_ws_rpc.config import WebSocketRpcClientConfig, RpcKeepaliveConfig
+            config = WebSocketRpcClientConfig(
+                keepalive=RpcKeepaliveConfig(interval=30.0, use_protocol_ping=True)
+            )
+            async with WebSocketRpcClient(uri, methods, config=config) as client:
+                await client.call("some_method")
+
+            # Using preset configurations
+            config = WebSocketRpcClientConfig.production_defaults()
+            async with WebSocketRpcClient(uri, methods, config=config) as client:
+                await client.call("some_method")
             ```
         """
         self.uri = uri
         self.methods = methods or RpcMethodsBase()
-        self.connect_kwargs: dict[str, Any] = kwargs
-        self._max_message_size = max_message_size
-        self._max_pending_requests = max_pending_requests
-        self._max_connection_duration = max_connection_duration
 
-        # Set default timeout if not specified
+        # Initialize and validate configuration
+        self.config = config or WebSocketRpcClientConfig()
+        self.config.validate()
+
+        # Store frequently accessed config values as instance attributes for convenience
+        self._max_message_size = self.config.backpressure.max_message_size
+        self._max_pending_requests = self.config.backpressure.max_pending_requests
+        self._default_response_timeout = self.config.connection.default_response_timeout
+        self._max_connection_duration = self.config.connection.max_connection_duration
+
+        # Build websocket connection kwargs from config
+        self.connect_kwargs: dict[str, Any] = self.config.websocket_kwargs.copy()
+        # Set default open timeout if not specified
         self.connect_kwargs.setdefault("open_timeout", 30)
 
         # State variables
@@ -127,32 +129,41 @@ class WebSocketRpcClient:
         self._close_code: int | None = None  # WebSocket close code
         self._close_reason: str | None = None  # WebSocket close reason
 
-        # Configuration
-        self.default_response_timeout = default_response_timeout
-
-        # Keep-alive configuration
-        max_failures = (
-            max_consecutive_ping_failures
-            if max_consecutive_ping_failures is not None
-            else self.DEFAULT_MAX_CONSECUTIVE_PING_FAILURES
-        )
-        # Create keepalive manager (will be started after connection is established)
-        # Note: ping and close functions will be bound after __init__
+        # Keep-alive configuration (manager will be created on connection)
         self._keepalive: RpcKeepalive | None = None
-        if keep_alive > 0:
-            # Defer creation until we have self.ping and self.close available
-            self._keep_alive_interval = keep_alive
-            self._max_consecutive_ping_failures = max_failures
-        else:
-            self._keep_alive_interval = 0
-            self._max_consecutive_ping_failures = max_failures
 
-        # Retry configuration
-        self._retry_manager = RpcRetryManager(retry_config)
+        # Retry configuration - convert from config to RpcRetryManager format
+        if not self.config.retry.enabled:
+            # Retries disabled
+            self._retry_manager = RpcRetryManager(False)
+        else:
+            # Convert RpcRetryConfig to tenacity-compatible dict
+            from tenacity import retry_if_exception, stop, wait
+
+            retry_config_dict = {
+                "wait": (
+                    wait.wait_random_exponential(
+                        min=self.config.retry.min_wait, max=self.config.retry.max_wait
+                    )
+                    if self.config.retry.jitter
+                    else wait.wait_exponential(
+                        min=self.config.retry.min_wait, max=self.config.retry.max_wait
+                    )
+                ),
+                "stop": stop.stop_after_attempt(self.config.retry.max_attempts),
+                "retry": retry_if_exception(
+                    lambda e: True
+                ),  # Retry all exceptions by default
+                "reraise": True,
+            }
+            self._retry_manager = RpcRetryManager(retry_config_dict)
 
         # Event handlers
         self._on_disconnect: list[OnDisconnectCallback] = on_disconnect or []
         self._on_connect: list[OnConnectCallback] = on_connect or []
+        # on_error currently maps to on_disconnect (will be used in future error handling refactor)
+        if on_error:
+            self._on_disconnect.extend(on_error)
 
         # Serialization
         self._serializing_socket_cls = serializing_socket_cls
@@ -227,10 +238,22 @@ class WebSocketRpcClient:
                     f"Wrapping WebSocket with {self._serializing_socket_cls.__name__}"
                 )
                 # Conditionally pass max_message_size to prevent DoS via large payloads
+                # Some serializers (e.g., BinarySerializingWebSocket) don't support this parameter
                 if self._max_message_size is not None:
-                    self.ws = self._serializing_socket_cls(raw_ws, max_message_size=self._max_message_size)  # type: ignore[call-arg]
+                    try:
+                        self.ws = self._serializing_socket_cls(raw_ws, max_message_size=self._max_message_size)  # type: ignore[call-arg]
+                    except TypeError as e:
+                        # Serializer doesn't support max_message_size parameter
+                        if "max_message_size" in str(e):
+                            logger.warning(
+                                f"{self._serializing_socket_cls.__name__} doesn't support max_message_size parameter, "
+                                f"using without size limit"
+                            )
+                            self.ws = self._serializing_socket_cls(raw_ws)
+                        else:
+                            raise
                 else:
-                    self.ws = self._serializing_socket_cls(raw_ws)  # type: ignore[call-arg]
+                    self.ws = self._serializing_socket_cls(raw_ws)
 
                 # Create RPC channel with production hardening parameters:
                 # - max_pending_requests: Prevents memory exhaustion from request flooding
@@ -238,7 +261,7 @@ class WebSocketRpcClient:
                 self.channel = RpcChannel(
                     self.methods,
                     self.ws,
-                    default_response_timeout=self.default_response_timeout,
+                    default_response_timeout=self._default_response_timeout,
                     max_pending_requests=self._max_pending_requests,
                     max_connection_duration=self._max_connection_duration,
                 )
@@ -263,12 +286,16 @@ class WebSocketRpcClient:
 
                 # Initialize and start keep-alive if enabled (interval > 0)
                 # Keep-alive detects unresponsive connections via periodic pings
-                if self._keep_alive_interval > 0:
+                # Protocol pings (WebSocket ping/pong frames) are 80-90% more efficient
+                # than RPC pings but RPC pings test the full message processing pipeline
+                if self.config.keepalive.enabled:
                     self._keepalive = RpcKeepalive(
-                        interval=self._keep_alive_interval,
-                        max_consecutive_failures=self._max_consecutive_ping_failures,
-                        ping_fn=self.ping,  # Bound method - will use self.channel
+                        interval=self.config.keepalive.interval,
+                        max_consecutive_failures=self.config.keepalive.max_consecutive_failures,
+                        websocket=raw_ws,  # Raw WebSocket for protocol-level pings
                         close_fn=self.close,  # Bound method - triggers cleanup
+                        use_protocol_ping=self.config.keepalive.use_protocol_ping,
+                        ping_fn=self.ping,  # Bound method - fallback for RPC pings
                     )
                     self._keepalive.start()
 
@@ -520,27 +547,27 @@ class WebSocketRpcClient:
         This confirms not just socket connectivity but RPC functionality.
         Makes multiple attempts with timeout before giving up.
         """
+        # Connection verification settings
+        max_attempts = 5  # Maximum number of verification attempts
+        wait_timeout = 1.0  # Timeout in seconds for each ping attempt
+
         received_response = None
         attempt_count = 0
 
-        # RETRY PATTERN: Try up to MAX_CONNECTION_ATTEMPTS times to verify RPC readiness
+        # RETRY PATTERN: Try up to max_attempts times to verify RPC readiness
         # This is necessary because:
         # 1. Server may need time to process the connection
         # 2. Reader task may not be fully started yet
         # 3. Network conditions may cause transient failures
         # If all attempts fail, we raise the last exception
-        while (
-            received_response is None and attempt_count < self.MAX_CONNECTION_ATTEMPTS
-        ):
+        while received_response is None and attempt_count < max_attempts:
             try:
                 logger.debug(
-                    f"RPC ready check attempt {attempt_count + 1}/{self.MAX_CONNECTION_ATTEMPTS}"
+                    f"RPC ready check attempt {attempt_count + 1}/{max_attempts}"
                 )
                 # Send a ping with short timeout (1 second by default)
                 # This verifies bidirectional RPC communication
-                received_response = await asyncio.wait_for(
-                    self.ping(), self.WAIT_FOR_INITIAL_CONNECTION
-                )
+                received_response = await asyncio.wait_for(self.ping(), wait_timeout)
                 logger.debug(f"RPC ready check succeeded: {received_response}")
 
             except asyncio.TimeoutError:

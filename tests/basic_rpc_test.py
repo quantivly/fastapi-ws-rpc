@@ -7,6 +7,11 @@ import pytest
 import uvicorn
 from fastapi import FastAPI
 
+from fastapi_ws_rpc.config import (
+    RpcConnectionConfig,
+    RpcKeepaliveConfig,
+    WebSocketRpcClientConfig,
+)
 from fastapi_ws_rpc.logger import LoggingModes, logging_config
 from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
@@ -41,9 +46,10 @@ async def test_echo(server):
     """
     Test basic RPC with a simple echo
     """
-    async with WebSocketRpcClient(
-        uri, RpcUtilityMethods(), default_response_timeout=4
-    ) as client:
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
+    async with WebSocketRpcClient(uri, RpcUtilityMethods(), config=config) as client:
         text = "Hello World!"
         response = await client.other.echo(text=text)
         assert response.result == text
@@ -54,9 +60,10 @@ async def test_ping(server):
     """
     Test basic RPC with a simple ping
     """
-    async with WebSocketRpcClient(
-        uri, RpcUtilityMethods(), default_response_timeout=4
-    ) as client:
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
+    async with WebSocketRpcClient(uri, RpcUtilityMethods(), config=config) as client:
         try:
             await client.other.ping()
             passed = True
@@ -71,9 +78,10 @@ async def test_other_channel_id(server):
     """
     Test basic RPC with a simple _get_channel_id_
     """
-    async with WebSocketRpcClient(
-        uri, RpcUtilityMethods(), default_response_timeout=4
-    ) as client:
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
+    async with WebSocketRpcClient(uri, RpcUtilityMethods(), config=config) as client:
         try:
             response = await client.other._get_channel_id_()
             assert response.result_type == "str"
@@ -89,9 +97,11 @@ async def test_keep_alive(server):
     """
     Test basic RPC with a simple echo + keep alive in the background
     """
-    async with WebSocketRpcClient(
-        uri, RpcUtilityMethods(), default_response_timeout=4, keep_alive=0.1
-    ) as client:
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4),
+        keepalive=RpcKeepaliveConfig(interval=0.1),
+    )
+    async with WebSocketRpcClient(uri, RpcUtilityMethods(), config=config) as client:
         text = "Hello World!"
         response = await client.other.echo(text=text)
         assert response.result == text
@@ -104,9 +114,10 @@ async def test_structured_response(server):
     Test RPC with structured (pydantic model) data response
     Using process details as example data
     """
-    async with WebSocketRpcClient(
-        uri, RpcUtilityMethods(), default_response_timeout=4
-    ) as client:
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
+    async with WebSocketRpcClient(uri, RpcUtilityMethods(), config=config) as client:
         utils = RpcUtilityMethods()
         await utils.get_process_details()
         response = await client.other.get_process_details()

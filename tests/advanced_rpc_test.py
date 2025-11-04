@@ -6,6 +6,7 @@ import pytest
 import uvicorn
 from fastapi import APIRouter, FastAPI, WebSocket
 
+from fastapi_ws_rpc.config import RpcConnectionConfig, WebSocketRpcClientConfig
 from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
 from fastapi_ws_rpc.utils import gen_uid
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
@@ -50,9 +51,10 @@ async def test_recursive_rpc_calls(server):
         - follow-up calls
         - remote promise access
     """
-    async with WebSocketRpcClient(
-        uri, RpcUtilityMethods(), default_response_timeout=4
-    ) as client:
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
+    async with WebSocketRpcClient(uri, RpcUtilityMethods(), config=config) as client:
         text = "recursive-helloworld"
         utils = RpcUtilityMethods()
         await utils.get_process_details()

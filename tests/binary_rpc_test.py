@@ -8,6 +8,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from fastapi_ws_rpc import WebSocketFrameType
+from fastapi_ws_rpc.config import RpcConnectionConfig, WebSocketRpcClientConfig
 from fastapi_ws_rpc.logger import LoggingModes, logging_config
 from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
 from fastapi_ws_rpc.simplewebsocket import SimpleWebSocket
@@ -70,10 +71,13 @@ async def test_echo(server):
     """
     Test basic RPC with a simple echo
     """
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
     async with WebSocketRpcClient(
         uri,
         RpcUtilityMethods(),
-        default_response_timeout=4,
+        config=config,
         serializing_socket_cls=BinarySerializingWebSocket,
     ) as client:
         text = "Hello World!"
@@ -87,10 +91,13 @@ async def test_structured_response(server):
     Test RPC with structured (pydantic model) data response
     Using process details as example data
     """
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
     async with WebSocketRpcClient(
         uri,
         RpcUtilityMethods(),
-        default_response_timeout=4,
+        config=config,
         serializing_socket_cls=BinarySerializingWebSocket,
     ) as client:
         utils = RpcUtilityMethods()

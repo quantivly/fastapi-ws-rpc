@@ -1,0 +1,506 @@
+"""Configuration dataclasses for FastAPI WebSocket RPC client.
+
+This module provides immutable, validated configuration objects for all aspects
+of the RPC client behavior including connection lifecycle, backpressure management,
+keepalive behavior, and retry logic.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass(frozen=True)
+class RpcConnectionConfig:
+    """Configuration for RPC connection lifecycle and timeouts.
+
+    Controls how long connections stay alive, how long to wait for responses,
+    and when to consider a connection idle.
+
+    Parameters
+    ----------
+    default_response_timeout : float | None, default None
+        Default timeout in seconds for RPC responses. If None, requests will
+        wait indefinitely. Can be overridden per-request.
+    max_connection_duration : float | None, default None
+        Maximum time in seconds a connection can remain active before being
+        gracefully closed. If None, connections can remain open indefinitely.
+    idle_timeout : float | None, default None
+        Time in seconds of inactivity after which the connection is considered
+        idle and should be closed. If None, idle connections stay open.
+        Replaces the old receive_timeout concept.
+
+    Examples
+    --------
+    >>> # Short timeouts for production
+    >>> config = RpcConnectionConfig(
+    ...     default_response_timeout=30.0,
+    ...     max_connection_duration=3600.0,
+    ...     idle_timeout=300.0
+    ... )
+    >>> config.validate()
+
+    >>> # No timeouts for development
+    >>> config = RpcConnectionConfig()
+    >>> config.validate()
+    """
+
+    default_response_timeout: float | None = None
+    max_connection_duration: float | None = None
+    idle_timeout: float | None = None
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization.
+
+        Raises
+        ------
+        ValueError
+            If any timeout values are negative, or if response_timeout
+            is greater than or equal to max_connection_duration.
+        """
+        if (
+            self.default_response_timeout is not None
+            and self.default_response_timeout < 0
+        ):
+            raise ValueError(
+                f"default_response_timeout must be non-negative, got {self.default_response_timeout}"
+            )
+
+        if (
+            self.max_connection_duration is not None
+            and self.max_connection_duration <= 0
+        ):
+            raise ValueError(
+                f"max_connection_duration must be positive, got {self.max_connection_duration}"
+            )
+
+        if self.idle_timeout is not None and self.idle_timeout <= 0:
+            raise ValueError(f"idle_timeout must be positive, got {self.idle_timeout}")
+
+        # Ensure response timeout doesn't exceed connection duration
+        if (
+            self.default_response_timeout is not None
+            and self.max_connection_duration is not None
+            and self.default_response_timeout >= self.max_connection_duration
+        ):
+            raise ValueError(
+                f"default_response_timeout ({self.default_response_timeout}s) must be "
+                f"less than max_connection_duration ({self.max_connection_duration}s)"
+            )
+
+    def validate(self) -> None:
+        """Explicitly validate the configuration.
+
+        This method exists for consistency with other config classes and to
+        allow external validation. Validation is automatically performed in
+        __post_init__, so this is typically not needed.
+        """
+        # Validation is already done in __post_init__
+        pass
+
+
+@dataclass(frozen=True)
+class RpcBackpressureConfig:
+    """Configuration for backpressure management and message limits.
+
+    Controls how many pending requests can queue up and the maximum size of
+    individual messages to prevent resource exhaustion.
+
+    Parameters
+    ----------
+    max_pending_requests : int, default 1000
+        Maximum number of pending RPC requests allowed before backpressure
+        is applied. New requests will block or fail when this limit is reached.
+    max_message_size : int, default 10485760
+        Maximum size in bytes for a single message (default 10MB). Messages
+        exceeding this size should be rejected or chunked.
+
+    Examples
+    --------
+    >>> # Conservative limits for high-traffic production
+    >>> config = RpcBackpressureConfig(
+    ...     max_pending_requests=500,
+    ...     max_message_size=5 * 1024 * 1024  # 5MB
+    ... )
+    >>> config.validate()
+
+    >>> # Higher limits for development
+    >>> config = RpcBackpressureConfig(
+    ...     max_pending_requests=2000,
+    ...     max_message_size=20 * 1024 * 1024  # 20MB
+    ... )
+    >>> config.validate()
+    """
+
+    max_pending_requests: int = 1000
+    max_message_size: int = 10 * 1024 * 1024  # 10MB
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization.
+
+        Raises
+        ------
+        ValueError
+            If max_pending_requests or max_message_size are not positive.
+        """
+        if self.max_pending_requests <= 0:
+            raise ValueError(
+                f"max_pending_requests must be positive, got {self.max_pending_requests}"
+            )
+
+        if self.max_message_size <= 0:
+            raise ValueError(
+                f"max_message_size must be positive, got {self.max_message_size}"
+            )
+
+    def validate(self) -> None:
+        """Explicitly validate the configuration.
+
+        This method exists for consistency with other config classes and to
+        allow external validation. Validation is automatically performed in
+        __post_init__, so this is typically not needed.
+        """
+        # Validation is already done in __post_init__
+        pass
+
+
+@dataclass(frozen=True)
+class RpcKeepaliveConfig:
+    """Configuration for connection keepalive behavior.
+
+    Controls how frequently keepalive checks are performed and what type of
+    ping mechanism to use (WebSocket protocol ping vs RPC-level ping).
+
+    Parameters
+    ----------
+    interval : float, default 0
+        Time in seconds between keepalive checks. Set to 0 to disable keepalive.
+    max_consecutive_failures : int, default 3
+        Maximum number of consecutive keepalive failures before considering
+        the connection dead and closing it.
+    use_protocol_ping : bool, default True
+        If True, use WebSocket protocol-level ping/pong frames for keepalive.
+        If False, use RPC-level ping messages. Protocol pings are more efficient
+        but RPC pings test the full message processing pipeline.
+
+    Examples
+    --------
+    >>> # Enable keepalive with 30-second interval
+    >>> config = RpcKeepaliveConfig(interval=30.0)
+    >>> assert config.enabled
+    >>> config.validate()
+
+    >>> # Disabled keepalive (default)
+    >>> config = RpcKeepaliveConfig()
+    >>> assert not config.enabled
+
+    >>> # Use RPC-level pings instead of protocol pings
+    >>> config = RpcKeepaliveConfig(
+    ...     interval=30.0,
+    ...     use_protocol_ping=False
+    ... )
+    >>> config.validate()
+    """
+
+    interval: float = 0
+    max_consecutive_failures: int = 3
+    use_protocol_ping: bool = True
+
+    @property
+    def enabled(self) -> bool:
+        """Check if keepalive is enabled.
+
+        Returns
+        -------
+        bool
+            True if keepalive interval is greater than 0, False otherwise.
+        """
+        return self.interval > 0
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization.
+
+        Raises
+        ------
+        ValueError
+            If interval is negative, or if keepalive is enabled but
+            max_consecutive_failures is less than 1.
+        """
+        if self.interval < 0:
+            raise ValueError(f"interval must be non-negative, got {self.interval}")
+
+        if self.enabled and self.max_consecutive_failures < 1:
+            raise ValueError(
+                f"max_consecutive_failures must be at least 1 when keepalive is enabled, "
+                f"got {self.max_consecutive_failures}"
+            )
+
+    def validate(self) -> None:
+        """Explicitly validate the configuration.
+
+        This method exists for consistency with other config classes and to
+        allow external validation. Validation is automatically performed in
+        __post_init__, so this is typically not needed.
+        """
+        # Validation is already done in __post_init__
+        pass
+
+
+@dataclass(frozen=True)
+class RpcRetryConfig:
+    """Configuration for automatic retry behavior with exponential backoff.
+
+    Controls how failed RPC requests are retried, including retry limits,
+    backoff timing, and jitter to prevent thundering herd problems.
+
+    Parameters
+    ----------
+    enabled : bool, default True
+        Whether automatic retries are enabled. When False, failed requests
+        raise immediately without retry attempts.
+    max_attempts : int, default 5
+        Maximum number of retry attempts (including the initial attempt).
+        Must be positive when retries are enabled.
+    min_wait : float, default 0.1
+        Minimum wait time in seconds before the first retry. Subsequent
+        retries use exponential backoff from this base.
+    max_wait : float, default 30.0
+        Maximum wait time in seconds between retry attempts. Caps the
+        exponential backoff to prevent excessively long waits.
+    jitter : bool, default True
+        If True, add random jitter to retry delays to prevent thundering herd
+        problems when many clients retry simultaneously. Recommended for
+        production use.
+
+    Examples
+    --------
+    >>> # Standard retry configuration with jitter
+    >>> config = RpcRetryConfig(
+    ...     enabled=True,
+    ...     max_attempts=5,
+    ...     min_wait=0.1,
+    ...     max_wait=30.0,
+    ...     jitter=True
+    ... )
+    >>> config.validate()
+
+    >>> # Aggressive retry for high-reliability scenarios
+    >>> config = RpcRetryConfig(
+    ...     max_attempts=10,
+    ...     min_wait=0.05,
+    ...     max_wait=60.0
+    ... )
+    >>> config.validate()
+
+    >>> # Disable retries for testing
+    >>> config = RpcRetryConfig(enabled=False)
+    >>> config.validate()
+    """
+
+    enabled: bool = True
+    max_attempts: int = 5
+    min_wait: float = 0.1
+    max_wait: float = 30.0
+    jitter: bool = True
+
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization.
+
+        Raises
+        ------
+        ValueError
+            If max_attempts is not positive, if min_wait or max_wait are negative,
+            or if max_wait is less than min_wait.
+        """
+        if self.max_attempts <= 0:
+            raise ValueError(f"max_attempts must be positive, got {self.max_attempts}")
+
+        if self.min_wait < 0:
+            raise ValueError(f"min_wait must be non-negative, got {self.min_wait}")
+
+        if self.max_wait < 0:
+            raise ValueError(f"max_wait must be non-negative, got {self.max_wait}")
+
+        if self.max_wait < self.min_wait:
+            raise ValueError(
+                f"max_wait ({self.max_wait}s) must be >= min_wait ({self.min_wait}s)"
+            )
+
+    def validate(self) -> None:
+        """Explicitly validate the configuration.
+
+        This method exists for consistency with other config classes and to
+        allow external validation. Validation is automatically performed in
+        __post_init__, so this is typically not needed.
+        """
+        # Validation is already done in __post_init__
+        pass
+
+
+@dataclass(frozen=True)
+class WebSocketRpcClientConfig:
+    """Complete configuration for WebSocket RPC client behavior.
+
+    Combines all configuration aspects (connection, backpressure, keepalive,
+    retry) into a single immutable configuration object. Provides factory
+    methods for common preset configurations.
+
+    Parameters
+    ----------
+    connection : RpcConnectionConfig, default RpcConnectionConfig()
+        Connection lifecycle and timeout configuration.
+    backpressure : RpcBackpressureConfig, default RpcBackpressureConfig()
+        Backpressure management and message size limits.
+    keepalive : RpcKeepaliveConfig, default RpcKeepaliveConfig()
+        Keepalive behavior and failure handling.
+    retry : RpcRetryConfig, default RpcRetryConfig()
+        Retry behavior with exponential backoff and jitter.
+    websocket_kwargs : dict[str, Any], default {}
+        Additional keyword arguments to pass to the underlying WebSocket
+        connection. Can include proxy settings, headers, etc.
+
+    Examples
+    --------
+    >>> # Create with default settings
+    >>> config = WebSocketRpcClientConfig()
+    >>> config.validate()
+
+    >>> # Create with custom sub-configurations
+    >>> config = WebSocketRpcClientConfig(
+    ...     connection=RpcConnectionConfig(default_response_timeout=30.0),
+    ...     keepalive=RpcKeepaliveConfig(interval=30.0),
+    ...     websocket_kwargs={"ping_interval": None}
+    ... )
+    >>> config.validate()
+
+    >>> # Use production presets
+    >>> config = WebSocketRpcClientConfig.production_defaults()
+    >>> assert config.connection.default_response_timeout == 30.0
+    >>> assert config.keepalive.enabled
+
+    >>> # Use development presets
+    >>> config = WebSocketRpcClientConfig.development_defaults()
+    >>> assert config.connection.default_response_timeout is None
+    >>> assert not config.keepalive.enabled
+    """
+
+    connection: RpcConnectionConfig = field(default_factory=RpcConnectionConfig)
+    backpressure: RpcBackpressureConfig = field(default_factory=RpcBackpressureConfig)
+    keepalive: RpcKeepaliveConfig = field(default_factory=RpcKeepaliveConfig)
+    retry: RpcRetryConfig = field(default_factory=RpcRetryConfig)
+    websocket_kwargs: dict[str, Any] = field(default_factory=dict)
+
+    def validate(self) -> None:
+        """Validate all sub-configurations.
+
+        Calls the validate() method on each sub-configuration to ensure
+        all settings are valid and consistent.
+
+        Raises
+        ------
+        ValueError
+            If any sub-configuration validation fails.
+        """
+        self.connection.validate()
+        self.backpressure.validate()
+        self.keepalive.validate()
+        self.retry.validate()
+
+    @classmethod
+    def production_defaults(cls) -> WebSocketRpcClientConfig:
+        """Create configuration with production-ready defaults.
+
+        Production defaults prioritize reliability and resource management:
+        - 30-second response timeout to fail fast
+        - 1-hour maximum connection duration for graceful rotation
+        - 5-minute idle timeout to clean up inactive connections
+        - 30-second keepalive with protocol pings
+        - 500 max pending requests for backpressure
+        - Retries enabled with jitter
+
+        Returns
+        -------
+        WebSocketRpcClientConfig
+            Configuration object with production defaults.
+
+        Examples
+        --------
+        >>> config = WebSocketRpcClientConfig.production_defaults()
+        >>> assert config.connection.default_response_timeout == 30.0
+        >>> assert config.connection.max_connection_duration == 3600.0
+        >>> assert config.keepalive.interval == 30.0
+        >>> assert config.backpressure.max_pending_requests == 500
+        """
+        return cls(
+            connection=RpcConnectionConfig(
+                default_response_timeout=30.0,
+                max_connection_duration=3600.0,  # 1 hour
+                idle_timeout=300.0,  # 5 minutes
+            ),
+            backpressure=RpcBackpressureConfig(
+                max_pending_requests=500,
+                max_message_size=10 * 1024 * 1024,  # 10MB
+            ),
+            keepalive=RpcKeepaliveConfig(
+                interval=30.0,
+                max_consecutive_failures=3,
+                use_protocol_ping=True,
+            ),
+            retry=RpcRetryConfig(
+                enabled=True,
+                max_attempts=5,
+                min_wait=0.1,
+                max_wait=30.0,
+                jitter=True,
+            ),
+            websocket_kwargs={},
+        )
+
+    @classmethod
+    def development_defaults(cls) -> WebSocketRpcClientConfig:
+        """Create configuration with development-friendly defaults.
+
+        Development defaults prioritize debuggability and flexibility:
+        - No timeouts to allow debugging
+        - No keepalive to reduce noise in logs
+        - Retries enabled but with defaults
+        - Higher backpressure limits
+
+        Returns
+        -------
+        WebSocketRpcClientConfig
+            Configuration object with development defaults.
+
+        Examples
+        --------
+        >>> config = WebSocketRpcClientConfig.development_defaults()
+        >>> assert config.connection.default_response_timeout is None
+        >>> assert not config.keepalive.enabled
+        >>> assert config.retry.enabled
+        >>> assert config.backpressure.max_pending_requests == 1000
+        """
+        return cls(
+            connection=RpcConnectionConfig(
+                default_response_timeout=None,
+                max_connection_duration=None,
+                idle_timeout=None,
+            ),
+            backpressure=RpcBackpressureConfig(
+                max_pending_requests=1000,
+                max_message_size=10 * 1024 * 1024,  # 10MB
+            ),
+            keepalive=RpcKeepaliveConfig(
+                interval=0,  # Disabled
+                max_consecutive_failures=3,
+                use_protocol_ping=True,
+            ),
+            retry=RpcRetryConfig(
+                enabled=True,
+                max_attempts=5,
+                min_wait=0.1,
+                max_wait=30.0,
+                jitter=True,
+            ),
+            websocket_kwargs={},
+        )

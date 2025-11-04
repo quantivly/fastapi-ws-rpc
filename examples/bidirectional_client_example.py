@@ -34,6 +34,7 @@ class WaitingClient(RpcMethodsBase):
 
 
 async def run_client(uri):
+    # Using defaults - no need to create config object for simple examples
     async with WebSocketRpcClient(uri, WaitingClient()) as client:
         # wait for the server to allow us to send questions
         await client.channel.methods.can_send_queries.wait()

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from .config import RpcConnectionConfig
 from .connection_manager import ConnectionManager
 from .logger import get_logger
 from .rpc_channel import OnConnectCallback, OnDisconnectCallback, RpcChannel
@@ -46,7 +48,62 @@ class WebSocketSimplifier(SimpleWebSocket):
 
 class WebSocketRpcEndpoint:
     """
-    A websocket RPC server endpoint, exposing RPC methods
+    A websocket RPC server endpoint, exposing RPC methods.
+
+    This endpoint manages WebSocket connections and exposes RPC methods to clients.
+    It supports connection lifecycle management, message size limits, idle timeout,
+    and graceful connection closure.
+
+    Parameters
+    ----------
+    methods : RpcMethodsBase | None, optional
+        RPC methods to expose to clients. If None, creates empty RpcMethodsBase.
+    manager : ConnectionManager | None, optional
+        Connection tracking object. If None, creates new ConnectionManager.
+    on_disconnect : list[OnDisconnectCallback] | None, optional
+        Callbacks to execute on client disconnection.
+    on_connect : list[OnConnectCallback] | None, optional
+        Callbacks to execute on client connection. Server spins these as
+        new tasks without waiting.
+    frame_type : WebSocketFrameType, default WebSocketFrameType.Text
+        Frame type for websocket messages (Text or Binary).
+    serializing_socket_cls : type[SimpleWebSocket], default JsonSerializingWebSocket
+        Socket wrapper class for message serialization.
+    rpc_channel_get_remote_id : bool, default False
+        Whether to sync channel IDs between client and server.
+    max_message_size : int | None, optional
+        Maximum allowed message size in bytes. Prevents DoS attacks via
+        extremely large JSON payloads. None means no limit.
+    max_pending_requests : int | None, optional
+        Maximum number of pending RPC requests. Prevents resource exhaustion
+        from request flooding. None means no limit.
+    max_connection_duration : float | None, optional
+        Maximum time in seconds that connections can remain open. After this
+        time, connections will be gracefully closed. None means no limit.
+        DEPRECATED: Use connection_config.max_connection_duration instead.
+    connection_config : RpcConnectionConfig | None, optional
+        Connection lifecycle configuration including:
+        - idle_timeout: Close connection if no messages received for this duration.
+          The timer resets whenever ANY message is received. None means no idle timeout.
+        - max_connection_duration: Maximum connection lifetime regardless of activity.
+        - default_response_timeout: Default timeout for RPC responses.
+        If None, creates default RpcConnectionConfig with no timeouts.
+
+    Notes
+    -----
+    The idle_timeout parameter provides TRUE idle semantics - the connection is
+    closed only if NO messages are received within the timeout period. This is
+    different from the old receive_timeout which applied per-message and had a
+    misleading name.
+
+    Examples
+    --------
+    >>> # Create endpoint with 5-minute idle timeout
+    >>> config = RpcConnectionConfig(idle_timeout=300.0)
+    >>> endpoint = WebSocketRpcEndpoint(
+    ...     methods=my_methods,
+    ...     connection_config=config
+    ... )
     """
 
     def __init__(
@@ -61,32 +118,8 @@ class WebSocketRpcEndpoint:
         max_message_size: int | None = None,
         max_pending_requests: int | None = None,
         max_connection_duration: float | None = None,
-        receive_timeout: float | None = None,
+        connection_config: RpcConnectionConfig | None = None,
     ) -> None:
-        """[summary]
-
-        Args:
-            methods (RpcMethodsBase): RPC methods to expose
-            manager ([ConnectionManager], optional): Connection tracking object.
-            Defaults to None (i.e. new ConnectionManager()).
-            on_disconnect (List[coroutine], optional): Callbacks per disconnection
-            on_connect(List[coroutine], optional): Callbacks per connection (Server
-            spins the callbacks as a new task, not waiting on it.)
-            frame_type (WebSocketFrameType, optional): Frame type for websocket messages
-            serializing_socket_cls (type[SimpleWebSocket], optional): Socket wrapper class
-            rpc_channel_get_remote_id (bool, optional): Whether to sync channel IDs
-            max_message_size (int, optional): Maximum allowed message size in bytes (default 10MB).
-                                            Prevents DoS attacks via extremely large JSON payloads.
-            max_pending_requests (int, optional): Maximum number of pending RPC requests (default 1000).
-                                                Prevents resource exhaustion from request flooding.
-            max_connection_duration (float, optional): Maximum time in seconds that connections
-                                                      can remain open. After this time, connections
-                                                      will be gracefully closed. None means no limit.
-            receive_timeout (float, optional): Timeout in seconds for receiving messages.
-                                             If no message is received within this time, the connection
-                                             is closed to prevent zombie connections. None means no timeout.
-                                             Recommended: 300-600 seconds for most applications.
-        """
         self.manager = manager if manager is not None else ConnectionManager()
         self.methods = methods if methods is not None else RpcMethodsBase()
         # Event handlers
@@ -97,12 +130,53 @@ class WebSocketRpcEndpoint:
         self._rpc_channel_get_remote_id = rpc_channel_get_remote_id
         self._max_message_size = max_message_size
         self._max_pending_requests = max_pending_requests
-        self._max_connection_duration = max_connection_duration
-        self._receive_timeout = receive_timeout
+
+        # Connection configuration: merge legacy and new config
+        if connection_config is None:
+            # Create default config, potentially overridden by legacy parameter
+            self.connection_config = RpcConnectionConfig(
+                max_connection_duration=max_connection_duration
+            )
+        else:
+            # Use provided config, but warn if legacy parameter also provided
+            if max_connection_duration is not None:
+                logger.warning(
+                    "Both max_connection_duration and connection_config provided. "
+                    "Using connection_config.max_connection_duration. "
+                    "Please migrate to connection_config only."
+                )
+            self.connection_config = connection_config
+
+        # For backward compatibility with RpcChannel
+        self._max_connection_duration = self.connection_config.max_connection_duration
 
     async def main_loop(
         self, websocket: WebSocket, client_id: str | None = None, **kwargs: Any
     ) -> None:
+        """
+        Main loop for receiving and processing WebSocket messages.
+
+        Implements true idle timeout semantics where the connection is closed only
+        if NO messages are received within the idle_timeout period. The idle timer
+        resets whenever any message is received.
+
+        Parameters
+        ----------
+        websocket : WebSocket
+            FastAPI WebSocket connection.
+        client_id : str | None, optional
+            Optional client identifier.
+        **kwargs : Any
+            Additional keyword arguments passed to RpcChannel.
+
+        Notes
+        -----
+        Idle timeout behavior:
+        - If idle_timeout is set, tracks time since last message
+        - Timer resets on EVERY message received
+        - Connection closes gracefully when idle timeout expires
+        - Different from per-message timeout (old behavior)
+        """
         try:
             await self.manager.connect(websocket)
             logger.info("Client connected", {"remote_address": websocket.client})
@@ -130,22 +204,61 @@ class WebSocketRpcEndpoint:
             # trigger connect handlers
             await channel.on_connect()
             try:
+                # Initialize idle timeout tracking
+                last_message_time = time.time()
+                idle_timeout = self.connection_config.idle_timeout
+
                 while True:
-                    # Apply receive timeout if configured to prevent zombie connections
-                    if self._receive_timeout is not None:
-                        data = await asyncio.wait_for(
-                            simple_websocket.recv(), timeout=self._receive_timeout
+                    # Calculate remaining time before idle timeout
+                    recv_timeout: float | None = None
+                    if idle_timeout is not None:
+                        time_since_last_message = time.time() - last_message_time
+                        remaining_time = idle_timeout - time_since_last_message
+
+                        if remaining_time <= 0:
+                            # Idle timeout expired
+                            client_port = (
+                                websocket.client.port if websocket.client else "unknown"
+                            )
+                            logger.info(
+                                "Connection idle timeout: no messages received for %.1fs "
+                                "- %s :: %s",
+                                idle_timeout,
+                                client_port,
+                                channel.id,
+                            )
+                            await self.handle_disconnect(websocket, channel)
+                            break
+
+                        recv_timeout = remaining_time
+
+                    # Receive message with calculated timeout
+                    try:
+                        if recv_timeout is not None:
+                            data = await asyncio.wait_for(
+                                simple_websocket.recv(), timeout=recv_timeout
+                            )
+                        else:
+                            data = await simple_websocket.recv()
+                    except asyncio.TimeoutError:
+                        # Idle timeout reached
+                        client_port = (
+                            websocket.client.port if websocket.client else "unknown"
                         )
-                    else:
-                        data = await simple_websocket.recv()
+                        logger.info(
+                            "Connection idle timeout reached - %s :: %s",
+                            client_port,
+                            channel.id,
+                        )
+                        await self.handle_disconnect(websocket, channel)
+                        break
+
+                    # Message received - reset idle timer
+                    last_message_time = time.time()
+
+                    # Process message
                     await channel.on_message(data)
-            except asyncio.TimeoutError:
-                client_port = websocket.client.port if websocket.client else "unknown"
-                logger.info(
-                    f"Connection timeout - no message received within {self._receive_timeout}s "
-                    f"- {client_port} :: {channel.id}"
-                )
-                await self.handle_disconnect(websocket, channel)
+
             except WebSocketDisconnect:
                 client_port = websocket.client.port if websocket.client else "unknown"
                 logger.info(f"Client disconnected - {client_port} :: {channel.id}")

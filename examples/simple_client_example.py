@@ -6,6 +6,7 @@ PORT = 9000
 
 
 async def run_client(uri):
+    # Using defaults - no need to create config object for simple examples
     async with WebSocketRpcClient(uri, RpcMethodsBase()) as client:
         # call concat on the other side
         response = await client.other.concat(a="hello", b=" world")
