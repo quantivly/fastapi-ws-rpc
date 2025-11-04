@@ -37,6 +37,17 @@ PROMISE_CLEANUP_INTERVAL = 60.0  # 1 minute
 # Prevents DoS attacks via extremely long ID strings
 MAX_REQUEST_ID_LENGTH = 256
 
+# Cooldown period for request ID reuse (in seconds)
+# After a request is completed, its ID cannot be reused for this duration
+# This prevents:
+# - Accidental UUID collisions from being exploited
+# - Malicious clients from intentionally reusing IDs
+REQUEST_ID_COOLDOWN = 10.0
+
+# Maximum number of recently used IDs to track
+# Older entries are purged to prevent unbounded memory growth
+MAX_RECENT_IDS = 10000
+
 
 class RpcPromise:
     """
@@ -122,6 +133,9 @@ class RpcPromiseManager:
         self._requests: dict[str, RpcPromise] = {}
         # Received responses
         self._responses: dict[str, JsonRpcResponse] = {}
+        # Recently used request IDs for cooldown enforcement
+        # Maps request ID -> timestamp of last use
+        self._recently_used_ids: dict[str, float] = {}
         # Internal event signaling channel closure
         self._closed = asyncio.Event()
         # Max pending requests for backpressure control
@@ -170,7 +184,8 @@ class RpcPromiseManager:
 
         Raises:
             RpcBackpressureError: If max pending requests limit is reached
-            ValueError: If the request ID is already in use (collision)
+            ValueError: If the request ID is already in use (collision) or if
+                       the ID was recently used and is still in cooldown period
         """
         # Ensure cleanup task is running
         self._ensure_cleanup_task_started()
@@ -185,6 +200,19 @@ class RpcPromiseManager:
                 f"This may indicate a malicious or buggy client."
             )
 
+        # Check if ID was recently used (cooldown enforcement)
+        current_time = time.time()
+        if call_id in self._recently_used_ids:
+            last_use_time = self._recently_used_ids[call_id]
+            time_since_last_use = current_time - last_use_time
+            if time_since_last_use < REQUEST_ID_COOLDOWN:
+                raise ValueError(
+                    f"Request ID '{call_id}' was used {time_since_last_use:.1f}s ago. "
+                    f"Cooldown period: {REQUEST_ID_COOLDOWN}s. "
+                    f"Please wait {REQUEST_ID_COOLDOWN - time_since_last_use:.1f}s before reusing this ID. "
+                    f"This prevents accidental or malicious ID reuse."
+                )
+
         # Check backpressure limit BEFORE creating the promise
         if len(self._requests) >= self._max_pending_requests:
             raise RpcBackpressureError(
@@ -193,11 +221,25 @@ class RpcPromiseManager:
                 f"Current pending: {len(self._requests)}"
             )
 
-        # Validate request ID is not already in use
+        # Validate request ID is not already in use for a pending request
         if call_id in self._requests:
             raise ValueError(
                 f"Request ID collision detected: '{call_id}' is already in use for a pending request. "
                 f"Each RPC call must have a unique ID. This likely indicates a bug in call ID generation."
+            )
+
+        # Mark ID as used with current timestamp
+        self._recently_used_ids[call_id] = current_time
+
+        # Cleanup old entries if we exceed max size to prevent unbounded growth
+        if len(self._recently_used_ids) > MAX_RECENT_IDS:
+            cutoff_time = current_time - REQUEST_ID_COOLDOWN
+            self._recently_used_ids = {
+                k: v for k, v in self._recently_used_ids.items() if v >= cutoff_time
+            }
+            logger.debug(
+                f"Cleaned up old recently-used IDs. "
+                f"Remaining: {len(self._recently_used_ids)}/{MAX_RECENT_IDS}"
             )
 
         promise = RpcPromise(request)

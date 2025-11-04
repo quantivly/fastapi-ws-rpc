@@ -1,5 +1,5 @@
 """
-Pytest configuration and shared fixtures for fastapi_websocket_rpc tests.
+Pytest configuration and shared fixtures for fastapi_ws_rpc tests.
 
 This module provides:
 - Custom pytest markers for test categorization

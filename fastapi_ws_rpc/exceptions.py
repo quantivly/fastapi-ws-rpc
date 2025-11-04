@@ -1,5 +1,5 @@
 """
-Exception classes for fastapi_websocket_rpc.
+Exception classes for fastapi_ws_rpc.
 
 This module defines all custom exceptions raised by the library.
 All exceptions inherit from RpcError, which inherits from Exception.
@@ -11,7 +11,7 @@ class RpcError(Exception):
     Base exception for all RPC-related errors.
 
     This is the parent class for all custom exceptions raised by the
-    fastapi_websocket_rpc library. Catching this exception will catch
+    fastapi_ws_rpc library. Catching this exception will catch
     all library-specific errors.
     """
 

@@ -451,8 +451,13 @@ class TestRequestIdCollision:
         with pytest.raises(ValueError) as exc_info:
             promise_manager.create_promise(request2)
 
-        error_msg = str(exc_info.value)
-        assert "collision" in error_msg.lower()
+        error_msg = str(exc_info.value).lower()
+        # New behavior: cooldown error instead of collision error
+        assert (
+            "collision" in error_msg
+            or "cooldown" in error_msg
+            or "was used" in error_msg
+        )
         assert "duplicate-id" in error_msg
 
     @pytest.mark.asyncio
@@ -476,6 +481,12 @@ class TestRequestIdCollision:
         )
         promise_manager.create_promise(request1)
         promise_manager.clear_saved_call(request_id)
+
+        # Wait for cooldown period (10 seconds) before reusing ID
+        # This is a new security feature to prevent ID collisions
+        import asyncio
+
+        await asyncio.sleep(10.1)
 
         # Should be able to reuse the ID now
         request2 = JsonRpcRequest(

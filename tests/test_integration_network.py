@@ -209,15 +209,17 @@ class TestGracefulDisconnect:
         - Disconnect callbacks are invoked
         - Callbacks receive correct channel reference
         - Multiple callbacks are all invoked
-        - Errors in callbacks don't prevent disconnect
+        - Errors in callbacks don't prevent disconnect (isolated execution)
         """
         disconnect_called = []
+        error_callback_called = []
 
         async def on_disconnect(channel: RpcChannel) -> None:
             disconnect_called.append(channel.id)
 
         async def on_disconnect_error(channel: RpcChannel) -> None:
-            # Callback that raises error
+            # Callback that raises error - but we mark it was called first
+            error_callback_called.append(True)
             raise RuntimeError("Callback error")
 
         # Create channel with callbacks
@@ -231,13 +233,16 @@ class TestGracefulDisconnect:
 
         # Call on_disconnect to trigger callbacks
         # Note: In production, this is called by the endpoint/client
-        # The second callback raises an error, which will propagate
-        with pytest.raises(RuntimeError, match="Callback error"):
-            await channel.on_disconnect()
+        # The second callback raises an error, but it doesn't propagate or prevent other callbacks
+        await channel.on_disconnect()
 
-        # First callback should have been called before the error
-        assert len(disconnect_called) >= 1
+        # Both callbacks should have been called despite the error
+        assert len(disconnect_called) == 1, "Normal callback should have been called"
         assert disconnect_called[0] == channel_id
+        assert len(error_callback_called) == 1, "Error callback should have been called"
+
+        # Disconnect completed successfully despite callback error
+        # This verifies the new behavior where callbacks are isolated
 
         # Now close the channel (already closed by on_disconnect)
         await channel.close()

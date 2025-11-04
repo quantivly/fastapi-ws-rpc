@@ -1,6 +1,6 @@
-# Contributing to fastapi_websocket_rpc
+# Contributing to fastapi_ws_rpc
 
-Thank you for your interest in contributing to fastapi_websocket_rpc! This document provides guidelines and instructions for contributing to the project.
+Thank you for your interest in contributing to fastapi_ws_rpc! This document provides guidelines and instructions for contributing to the project.
 
 ## Table of Contents
 
@@ -197,7 +197,7 @@ Before submitting your PR, ensure:
 When reporting bugs, please include:
 
 - Python version
-- fastapi_websocket_rpc version
+- fastapi_ws_rpc version
 - Operating system
 - Minimal code example reproducing the issue
 - Full error traceback
@@ -222,6 +222,6 @@ If you have questions about contributing:
 
 ## License
 
-By contributing to fastapi_websocket_rpc, you agree that your contributions will be licensed under the MIT License.
+By contributing to fastapi_ws_rpc, you agree that your contributions will be licensed under the MIT License.
 
 Thank you for contributing! 🎉

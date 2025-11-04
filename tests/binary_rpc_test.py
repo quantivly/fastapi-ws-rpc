@@ -29,6 +29,9 @@ class BinarySerializingWebSocket(SimpleWebSocket):
         self._websocket = websocket
 
     def _serialize(self, msg):
+        # Handle both dict (from model_dump()) and BaseModel objects
+        if isinstance(msg, dict):
+            return json.dumps(msg).encode()
         return pydantic_serialize(msg).encode()
 
     def _deserialize(self, buffer):

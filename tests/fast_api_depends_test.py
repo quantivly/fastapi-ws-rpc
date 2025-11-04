@@ -4,7 +4,7 @@ from multiprocessing import Process
 import pytest
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, Header, WebSocket
-from websockets.exceptions import InvalidStatusCode
+from websockets.exceptions import InvalidStatus
 
 from fastapi_ws_rpc.config import RpcConnectionConfig, WebSocketRpcClientConfig
 from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
@@ -34,7 +34,9 @@ def setup_server():
 
     @router.websocket("/ws/{client_id}")
     async def websocket_rpc_endpoint(
-        websocket: WebSocket, client_id: str, token=Depends(check_token_header)
+        websocket: WebSocket,
+        client_id: str,
+        token=Depends(check_token_header),  # noqa: B008
     ):
         await endpoint.main_loop(websocket, client_id)
 
@@ -87,6 +89,8 @@ async def test_invalid_token(server):
         ) as client:
             assert client is not None
             # if we got here - the server didn't reject us
-            assert False
-    except InvalidStatusCode as e:
-        assert e.status_code == 403
+            raise AssertionError(
+                "Expected server to reject connection with invalid token"
+            )
+    except InvalidStatus as e:
+        assert e.response.status_code == 403

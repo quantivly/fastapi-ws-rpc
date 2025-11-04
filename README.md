@@ -186,7 +186,7 @@ await channel.notify("log_event", {"level": "info", "message": "Processing..."})
 
 ## Logging
 fastapi-websocket-rpc provides a helper logging module to control how it produces logs for you.
-See [fastapi_websocket_rpc/logger.py](fastapi_ws_rpc/logger.py).
+See [fastapi_ws_rpc/logger.py](fastapi_ws_rpc/logger.py).
 Use ```logging_config.set_mode``` or the 'WS_RPC_LOGGING' environment variable to choose the logging method you prefer or override completely via default logging config.
 
 example:

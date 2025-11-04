@@ -83,8 +83,8 @@ async def test_other_channel_id(server):
     )
     async with WebSocketRpcClient(uri, RpcUtilityMethods(), config=config) as client:
         try:
-            response = await client.other._get_channel_id_()
-            assert response.result_type == "str"
+            _ = await client.other._get_channel_id_()
+            # result_type removed in JSON-RPC 2.0 migration - just verify we get a response
             passed = True
         except Exception:
             logging.exception("_get_channel_id test failed")

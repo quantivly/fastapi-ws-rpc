@@ -32,9 +32,9 @@ OnErrorCallback: TypeAlias = Callable[["RpcChannel", Exception], Awaitable[None]
 
 logger = get_logger("RPC_CHANNEL")
 
-
-class DEFAULT_TIMEOUT:
-    pass
+# Sentinel object for default timeout (more type-safe than a class)
+# Using a module-level constant allows proper type checking
+_DEFAULT_TIMEOUT_SENTINEL = object()
 
 
 class RpcChannel:
@@ -65,38 +65,47 @@ class RpcChannel:
         max_send_queue_size: int | None = None,
         **kwargs: Any,
     ) -> None:
-        """
+        """Initialize an RPC channel.
 
-        Args:
-            methods (RpcMethodsBase): RPC methods to expose to other side
-            socket: socket object providing simple send/recv methods
-            channel_id (str, optional): uuid for channel. Defaults to None in
-            which case a random UUID is generated.
-            default_response_timeout(float, optional) default timeout for RPC
-            call responses. Defaults to None - i.e. no timeout
-            sync_channel_id(bool, optional) should get the other side of the
-            channel id, helps to identify connections, cost a bit networking time.
-                Defaults to False - i.e. not getting the other side channel id
-            max_pending_requests (int, optional): Maximum number of pending RPC
-            requests before backpressure is applied. Defaults to 1000.
-            Prevents resource exhaustion from request flooding.
-            max_connection_duration (float, optional): Maximum time in seconds
-            that this channel can remain open. After this time, the connection
-            will be gracefully closed. None means no limit. Defaults to None.
-            debug_config (RpcDebugConfig, optional): Configuration for error
-            disclosure. If None, defaults to production-safe mode (debug_mode=False).
-            subprotocol (str, optional): Negotiated WebSocket subprotocol. This is
-            stored for runtime checks and logging. Defaults to None.
-            connect_callbacks (list[OnConnectCallback], optional): List of callbacks
-            to call when connection is established. Defaults to None.
-            disconnect_callbacks (list[OnDisconnectCallback], optional): List of
-            callbacks to call when connection is closed. Defaults to None.
-            error_callbacks (list[OnErrorCallback], optional): List of callbacks
-            to call when an error occurs. Defaults to None.
-            max_send_queue_size (int, optional): Maximum number of pending outgoing
-            messages before backpressure is applied. Defaults to 1000. Set to 0 to
-            disable send backpressure. Prevents send-side overwhelm and memory
-            exhaustion from queued messages.
+        Parameters
+        ----------
+        methods : RpcMethodsBase
+            RPC methods to expose to other side.
+        socket : Any
+            Socket object providing simple send/recv methods.
+        channel_id : str | None, optional
+            UUID for channel. Defaults to None in which case a random UUID
+            is generated.
+        default_response_timeout : float | None, optional
+            Default timeout for RPC call responses. Defaults to None (no timeout).
+        sync_channel_id : bool, optional
+            Should get the other side of the channel id. Helps to identify
+            connections, costs a bit networking time. Defaults to False.
+        max_pending_requests : int | None, optional
+            Maximum number of pending RPC requests before backpressure is applied.
+            Defaults to 1000. Prevents resource exhaustion from request flooding.
+        max_connection_duration : float | None, optional
+            Maximum time in seconds that this channel can remain open. After this
+            time, the connection will be gracefully closed. None means no limit.
+            Defaults to None.
+        debug_config : RpcDebugConfig | None, optional
+            Configuration for error disclosure. If None, defaults to production-safe
+            mode (debug_mode=False).
+        subprotocol : str | None, optional
+            Negotiated WebSocket subprotocol. This is stored for runtime checks
+            and logging. Defaults to None.
+        connect_callbacks : list[OnConnectCallback] | None, optional
+            List of callbacks to call when connection is established. Defaults to None.
+        disconnect_callbacks : list[OnDisconnectCallback] | None, optional
+            List of callbacks to call when connection is closed. Defaults to None.
+        error_callbacks : list[OnErrorCallback] | None, optional
+            List of callbacks to call when an error occurs. Defaults to None.
+        max_send_queue_size : int | None, optional
+            Maximum number of pending outgoing messages before backpressure is applied.
+            Defaults to 1000. Set to 0 to disable send backpressure. Prevents send-side
+            overwhelm and memory exhaustion from queued messages.
+        **kwargs : Any
+            Additional context data accessible to methods via channel.context.
         """
         logger.debug("Initializing RPC channel...")
         self.methods = methods._copy_()
@@ -150,6 +159,7 @@ class RpcChannel:
         self._connection_start_time = asyncio.get_event_loop().time()
         self._duration_watchdog_task: asyncio.Task[None] | None = None
         self._closing = False  # Flag to prevent concurrent close() calls
+        self._close_lock = asyncio.Lock()  # Lock to prevent race conditions in close()
 
         # Start duration watchdog if limit is set
         if self._max_connection_duration is not None:
@@ -164,6 +174,9 @@ class RpcChannel:
             max_send_queue_size if max_send_queue_size is not None else 1000
         )
         self._send_semaphore: asyncio.Semaphore | None = None
+        self._pending_sends = (
+            0  # Track pending sends to avoid accessing semaphore._value
+        )
         if self._max_send_queue_size > 0:
             self._send_semaphore = asyncio.Semaphore(self._max_send_queue_size)
 
@@ -176,10 +189,23 @@ class RpcChannel:
         return self._context
 
     async def get_other_channel_id(self) -> str:
-        """
-        Method to get the channel id of the other side of the channel
-        The _channel_id_synced verify we have it
-        Timeout exception can be raised if the value isn't available
+        """Get the channel id of the other side of the channel.
+
+        Returns
+        -------
+        str
+            The channel ID of the remote side.
+
+        Raises
+        ------
+        asyncio.TimeoutError
+            If the value isn't available within the default response timeout.
+        RemoteValueError
+            If the remote channel ID is not available.
+
+        Notes
+        -----
+        The _channel_id_synced event verifies we have the remote ID.
         """
         await asyncio.wait_for(
             self._channel_id_synced.wait(), self.default_response_timeout
@@ -189,25 +215,37 @@ class RpcChannel:
         return self._other_channel_id
 
     async def send(self, data: Any) -> None:
-        """
-        For internal use. wrap calls to underlying socket
+        """Wrap calls to underlying socket.
+
+        Parameters
+        ----------
+        data : Any
+            Data to send over the socket.
+
+        Notes
+        -----
+        For internal use.
         """
         await self.socket.send(data)
 
     async def send_raw(self, data: dict[str, Any]) -> None:
-        """
-        Send raw dictionary data as JSON with backpressure control.
+        """Send raw dictionary data as JSON with backpressure control.
 
         This method enforces send-side backpressure to prevent memory exhaustion
         from queued outgoing messages. If max_send_queue_size is configured and
         the send queue is full, this method will raise RpcBackpressureError.
 
-        Args:
-            data: Dictionary to send as JSON over the socket
+        Parameters
+        ----------
+        data : dict[str, Any]
+            Dictionary to send as JSON over the socket.
 
-        Raises:
-            RpcBackpressureError: If send queue is full (too many pending sends)
-            RpcChannelClosedError: If channel is closed
+        Raises
+        ------
+        RpcBackpressureError
+            If send queue is full (too many pending sends).
+        RpcChannelClosedError
+            If channel is closed.
         """
         # Check if channel is closed first
         if self.is_closed():
@@ -215,25 +253,24 @@ class RpcChannel:
 
         # Apply send backpressure if configured
         if self._send_semaphore is not None:
-            # Check if semaphore is available without blocking
-            # We use _value to check available permits (fail fast instead of queuing)
-            if self._send_semaphore._value <= 0:
-                # Calculate pending count for error message
-                pending = self._max_send_queue_size - self._send_semaphore._value
+            # Check if send queue is full (fail fast instead of queuing)
+            if self._pending_sends >= self._max_send_queue_size:
                 raise RpcBackpressureError(
-                    f"Send queue full: {pending}/{self._max_send_queue_size} "
+                    f"Send queue full: {self._pending_sends}/{self._max_send_queue_size} "
                     f"messages pending. Slow down sending or increase max_send_queue_size."
                 )
 
-            # Acquire semaphore (should succeed immediately due to check above)
+            # Acquire semaphore and increment counter
             await self._send_semaphore.acquire()
+            self._pending_sends += 1
 
             try:
                 # Send the message (socket handles serialization)
                 await self.socket.send(data)
             finally:
-                # Always release semaphore after send completes (or fails)
+                # Always release semaphore and decrement counter after send completes (or fails)
                 self._send_semaphore.release()
+                self._pending_sends -= 1
         else:
             # No backpressure - send directly
             await self.socket.send(data)
@@ -254,13 +291,15 @@ class RpcChannel:
         Returns:
             Result from closing the underlying socket
         """
-        # Make this method idempotent - return immediately if already closed
-        if self.is_closed():
-            logger.debug(f"Channel {self.id} already closed, skipping")
-            return None
+        # Use lock to ensure atomic check-and-set of closing flag
+        async with self._close_lock:
+            # Make this method idempotent - return immediately if already closed/closing
+            if self._closing or self.is_closed():
+                logger.debug(f"Channel {self.id} already closed/closing, skipping")
+                return None
 
-        # Set closing flag to prevent race conditions with watchdog
-        self._closing = True
+            # Set closing flag to prevent concurrent close() calls
+            self._closing = True
 
         logger.debug(f"Closing channel {self.id}...")
 
@@ -564,7 +603,7 @@ class RpcChannel:
         self,
         name: str,
         args: dict[str, Any] | None = None,
-        timeout: type[DEFAULT_TIMEOUT] | float | None = DEFAULT_TIMEOUT,
+        timeout: object | float | None = _DEFAULT_TIMEOUT_SENTINEL,
     ) -> JsonRpcResponse:
         """
         Call a method and wait for a response to be received.
@@ -573,7 +612,7 @@ class RpcChannel:
             name: Name of the method to call on the remote side
             args: Keyword arguments to pass to the method
             timeout: Maximum time to wait for response (seconds).
-                    Can be DEFAULT_TIMEOUT (use channel default), a number
+                    Can be _DEFAULT_TIMEOUT_SENTINEL (use channel default), a number
                     (seconds), or None (no timeout).
 
         Returns:
@@ -587,9 +626,9 @@ class RpcChannel:
             args = {}
         promise = await self.async_call(name, args)
 
-        # Convert DEFAULT_TIMEOUT to actual timeout value
+        # Convert _DEFAULT_TIMEOUT_SENTINEL to actual timeout value
         actual_timeout: float | None
-        if timeout is DEFAULT_TIMEOUT:
+        if timeout is _DEFAULT_TIMEOUT_SENTINEL:
             actual_timeout = self.default_response_timeout
         else:
             actual_timeout = timeout  # type: ignore[assignment]
@@ -623,8 +662,6 @@ class RpcChannel:
             args = {}
 
         # Create JSON-RPC 2.0 notification (request with id=None)
-        from .schemas import JsonRpcRequest
-
         notification = JsonRpcRequest(
             id=None,  # Notifications have no id
             method=name,

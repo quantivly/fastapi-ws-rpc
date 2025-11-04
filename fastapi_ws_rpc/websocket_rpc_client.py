@@ -39,6 +39,11 @@ OnErrorCallback = OnDisconnectCallback
 
 logger = get_logger(__name__)
 
+# Security: Maximum time to receive a complete WebSocket message
+# Protects against Slowloris-style attacks where malicious servers send
+# partial frames slowly to tie up client resources
+MESSAGE_RECEIVE_TIMEOUT = 60.0  # 1 minute max to receive complete message
+
 
 class WebSocketRpcClient:
     """
@@ -68,29 +73,38 @@ class WebSocketRpcClient:
         on_error: list[OnErrorCallback] | None = None,
         serializing_socket_cls: type[SimpleWebSocket] = JsonSerializingWebSocket,
     ) -> None:
-        """
-        Initialize the WebSocketRpcClient.
+        """Initialize the WebSocketRpcClient.
 
-        Args:
-            uri: Server URI to connect to (e.g., 'ws://localhost/ws/client1')
-            methods: RPC methods to expose to the server. Defaults to an empty
-                RpcMethodsBase.
-            config: Configuration object for all client behavior. If None, uses
-                default configuration. Use WebSocketRpcClientConfig.production_defaults()
-                or .development_defaults() for common presets.
-            on_connect: Callbacks executed when connection is established.
-            on_disconnect: Callbacks executed when connection is lost.
-            on_error: Callbacks executed when errors occur (currently maps to on_disconnect).
-            serializing_socket_cls: Class for serializing/deserializing messages.
+        Parameters
+        ----------
+        uri : str
+            Server URI to connect to (e.g., 'ws://localhost/ws/client1').
+        methods : RpcMethodsBase | None, optional
+            RPC methods to expose to the server. Defaults to an empty
+            RpcMethodsBase.
+        config : WebSocketRpcClientConfig | None, optional
+            Configuration object for all client behavior. If None, uses
+            default configuration. Use WebSocketRpcClientConfig.production_defaults()
+            or .development_defaults() for common presets.
+        on_connect : list[OnConnectCallback] | None, optional
+            Callbacks executed when connection is established.
+        on_disconnect : list[OnDisconnectCallback] | None, optional
+            Callbacks executed when connection is lost.
+        on_error : list[OnErrorCallback] | None, optional
+            Callbacks executed when errors occur (currently maps to on_disconnect).
+        serializing_socket_cls : type[SimpleWebSocket], optional
+            Class for serializing/deserializing messages, by default JsonSerializingWebSocket.
 
-        Usage:
-            ```python
-            # Using default config
+        Examples
+        --------
+        Using default config::
+
             async with WebSocketRpcClient(uri, RpcUtilityMethods()) as client:
                 response = await client.call("echo", {'text': "Hello World!"})
                 print(response)
 
-            # Using production config with custom settings
+        Using production config with custom settings::
+
             from fastapi_ws_rpc.config import WebSocketRpcClientConfig, RpcKeepaliveConfig
             config = WebSocketRpcClientConfig(
                 keepalive=RpcKeepaliveConfig(interval=30.0, use_protocol_ping=True)
@@ -98,11 +112,11 @@ class WebSocketRpcClient:
             async with WebSocketRpcClient(uri, methods, config=config) as client:
                 await client.call("some_method")
 
-            # Using preset configurations
+        Using preset configurations::
+
             config = WebSocketRpcClientConfig.production_defaults()
             async with WebSocketRpcClient(uri, methods, config=config) as client:
                 await client.call("some_method")
-            ```
         """
         self.uri = uri
         self.methods = methods or RpcMethodsBase()
@@ -128,6 +142,7 @@ class WebSocketRpcClient:
         self._read_task: asyncio.Task[None] | None = None
         self._connection_closed = asyncio.Event()
         self._closing = False  # Flag to make close() idempotent
+        self._close_lock = asyncio.Lock()  # Lock to prevent race conditions in close()
         self._close_code: int | None = None  # WebSocket close code
         self._close_reason: str | None = None  # WebSocket close reason
 
@@ -171,20 +186,28 @@ class WebSocketRpcClient:
         # Serialization
         self._serializing_socket_cls = serializing_socket_cls
 
+        # Reconnection state tracking
+        self._reconnect_attempt = 0  # Current reconnection attempt number
+        self._is_reconnecting = (
+            False  # Flag to prevent concurrent reconnection attempts
+        )
+
     def _validate_connected(self) -> None:
-        """
-        Validate that the client is connected and operational.
+        """Validate that the client is connected and operational.
 
         This method checks that all necessary components are initialized
         and the connection is in a valid state for RPC operations.
 
-        Raises:
-            RpcInvalidStateError: If WebSocket or RPC channel is not initialized,
-                                 or if the WebSocket is closed.
+        Raises
+        ------
+        RpcInvalidStateError
+            If WebSocket or RPC channel is not initialized,
+            or if the WebSocket is closed.
 
-        Usage:
-            This should be called at the start of any method that requires
-            an active connection (e.g., ping(), call(), reader()).
+        Notes
+        -----
+        This should be called at the start of any method that requires
+        an active connection (e.g., ping(), call(), reader()).
         """
         if self.ws is None:
             raise RpcInvalidStateError(
@@ -203,12 +226,344 @@ class WebSocketRpcClient:
                 "Create a new WebSocketRpcClient instance to reconnect."
             )
 
-    async def __connect__(self) -> WebSocketRpcClient:
+    async def _attempt_reconnection(self) -> None:
+        """Attempt to reconnect with exponential backoff.
+
+        This method is called when a connection is lost and auto_reconnect is enabled.
+        It will attempt to reconnect up to max_reconnect_attempts times, using
+        exponential backoff with a maximum delay of 60 seconds between attempts.
+
+        Notes
+        -----
+        The reconnection process:
+
+        1. Checks if already reconnecting (prevents concurrent reconnection attempts)
+        2. For each attempt up to max_reconnect_attempts:
+
+           a. Calculates delay with exponential backoff (capped at 60s)
+           b. Waits for the calculated delay
+           c. Attempts to call __connect__()
+           d. On success: logs success, resets attempt counter, returns
+           e. On failure: logs warning, increments attempt counter, continues
+
+        3. If all attempts exhausted: logs error and calls close()
+
+        No exceptions are raised - all errors are logged and handled internally.
+        If all reconnection attempts fail, the client will call close().
         """
-        Internal method to establish the WebSocket connection and initialize the RPC
-        channel.
+        # Prevent concurrent reconnection attempts
+        if self._is_reconnecting:
+            logger.debug("Reconnection already in progress, skipping duplicate attempt")
+            return
+
+        self._is_reconnecting = True
+        try:
+            for attempt in range(self.config.connection.max_reconnect_attempts):
+                # Calculate delay with exponential backoff, capped at 60 seconds
+                delay = min(
+                    self.config.connection.reconnect_delay * (2**attempt),
+                    60.0,  # Maximum 60 seconds between attempts
+                )
+
+                logger.info(
+                    f"Reconnecting in {delay:.1f}s "
+                    f"(attempt {attempt + 1}/{self.config.connection.max_reconnect_attempts})"
+                )
+                await asyncio.sleep(delay)
+
+                try:
+                    # Reset connection state before reconnecting
+                    self._connection_closed.clear()
+                    self._closing = False
+
+                    # Attempt to reconnect
+                    await self.__connect__()
+
+                    # Reconnection successful
+                    logger.info(
+                        f"Reconnection successful after {attempt + 1} attempt(s)"
+                    )
+                    self._reconnect_attempt = 0  # Reset attempt counter on success
+                    return
+
+                except (
+                    ConnectionRefusedError,
+                    ConnectionClosedError,
+                    ConnectionClosedOK,
+                    InvalidStatus,
+                    WebSocketException,
+                    OSError,
+                ) as e:
+                    # Expected connection errors - log and retry
+                    logger.warning(
+                        f"Reconnection attempt {attempt + 1} failed: {type(e).__name__}: {e}"
+                    )
+                    self._reconnect_attempt = attempt + 1
+
+                except (ValidationError, ValueError, TypeError, RuntimeError) as e:
+                    # Configuration or state errors - these won't be fixed by retrying
+                    logger.error(
+                        f"Reconnection attempt {attempt + 1} failed with non-retryable error: "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    break  # Stop trying, these errors won't be fixed by reconnecting
+
+                except Exception as e:
+                    # Unexpected errors - log and continue trying
+                    logger.exception(
+                        f"Reconnection attempt {attempt + 1} failed with unexpected error: "
+                        f"{type(e).__name__}: {e}"
+                    )
+
+            # All reconnection attempts exhausted
+            logger.error(
+                f"All {self.config.connection.max_reconnect_attempts} reconnection attempts exhausted. "
+                f"Connection permanently closed."
+            )
+            await self.close()
+
+        finally:
+            self._is_reconnecting = False
+
+    def _prepare_connection_kwargs(self) -> dict[str, Any]:
+        """Prepare WebSocket connection parameters.
+
+        Returns
+        -------
+        dict[str, Any]
+            Connection kwargs with all configured parameters.
+        """
+        connect_kwargs = self.connect_kwargs.copy()
+
+        # Add subprotocols to connect_kwargs if configured
+        if self.config.websocket and self.config.websocket.subprotocols:
+            connect_kwargs["subprotocols"] = self.config.websocket.subprotocols
+            logger.debug(
+                f"Creating WebSocket connection to {self.uri} with subprotocols: "
+                f"{self.config.websocket.subprotocols}"
+            )
+        else:
+            logger.debug(
+                f"Creating WebSocket connection to {self.uri} without subprotocol negotiation"
+            )
+
+        # Add compression to connect_kwargs if configured
+        # The websockets library supports permessage-deflate extension natively
+        if self.config.websocket and self.config.websocket.compression:
+            connect_kwargs["compression"] = self.config.websocket.compression
+            logger.debug(
+                f"Enabling WebSocket compression: {self.config.websocket.compression} "
+                f"(threshold: {self.config.websocket.compression_threshold} bytes)"
+            )
+        else:
+            # Explicitly disable compression if not configured
+            connect_kwargs["compression"] = None
+            logger.debug("WebSocket compression disabled")
+
+        # Add ping_timeout if configured (prevents mismatch with ping_interval)
+        if self.config.websocket and self.config.websocket.ping_timeout is not None:
+            connect_kwargs["ping_timeout"] = self.config.websocket.ping_timeout
+            logger.debug(
+                f"Setting ping_timeout to {self.config.websocket.ping_timeout}s"
+            )
+
+        # Set max_size at protocol level to reject oversized messages early
+        # This prevents DoS attacks via large payloads
+        if self._max_message_size is not None:
+            connect_kwargs["max_size"] = self._max_message_size
+            logger.debug(
+                f"Setting WebSocket max_size to {self._max_message_size} bytes"
+            )
+
+        logger.debug(f"Connection parameters: {connect_kwargs}")
+        return connect_kwargs
+
+    async def _establish_websocket(self, connect_kwargs: dict[str, Any]) -> Any:
+        """Establish WebSocket connection with optional compression fallback.
+
+        Parameters
+        ----------
+        connect_kwargs : dict[str, Any]
+            Connection parameters.
+
+        Returns
+        -------
+        Any
+            Connected WebSocket instance.
+
+        Raises
+        ------
+        Exception
+            Various exceptions from websockets.connect().
+        """
+        compression_enabled = connect_kwargs.get("compression") is not None
+
+        # Try to connect with compression first, fallback without if negotiation fails
+        raw_ws = None
+        if compression_enabled:
+            try:
+                raw_ws = await websockets.connect(self.uri, **connect_kwargs)
+            except Exception as e:
+                # Check if this is a compression negotiation failure
+                # websockets library may raise various exceptions for extension negotiation failures
+                error_msg = str(e).lower()
+                if (
+                    "extension" in error_msg
+                    or "compression" in error_msg
+                    or "deflate" in error_msg
+                ):
+                    logger.warning(
+                        f"Compression negotiation failed: {e}. "
+                        f"Retrying without compression..."
+                    )
+                    # Retry without compression
+                    connect_kwargs["compression"] = None
+                    raw_ws = await websockets.connect(self.uri, **connect_kwargs)
+                else:
+                    # Not a compression error, re-raise
+                    raise
+
+        # If we didn't try compression or it succeeded, connect normally
+        if raw_ws is None:
+            raw_ws = await websockets.connect(self.uri, **connect_kwargs)
+
+        return raw_ws
+
+    async def _validate_subprotocol(self, raw_ws: Any) -> None:
+        """Validate negotiated subprotocol matches configuration.
+
+        Parameters
+        ----------
+        raw_ws : Any
+            Raw WebSocket connection.
+
+        Raises
+        ------
+        ValueError
+            If subprotocol mismatch detected.
+        """
+        if self.config.websocket and self.config.websocket.subprotocols:
+            negotiated = getattr(raw_ws, "subprotocol", None)
+
+            if negotiated is None:
+                logger.warning(
+                    f"Server did not negotiate any subprotocol. "
+                    f"Requested: {self.config.websocket.subprotocols}"
+                )
+            elif negotiated not in self.config.websocket.subprotocols:
+                logger.error(
+                    f"Subprotocol mismatch: requested {self.config.websocket.subprotocols}, "
+                    f"got {negotiated}"
+                )
+                await raw_ws.close()
+                raise ValueError(
+                    f"Server negotiated unsupported subprotocol: {negotiated}"
+                )
+            else:
+                logger.info(f"WebSocket subprotocol negotiated: {negotiated}")
+        else:
+            # Log negotiated subprotocol even if we didn't request one
+            if hasattr(raw_ws, "subprotocol") and raw_ws.subprotocol:
+                logger.debug(f"WebSocket subprotocol negotiated: {raw_ws.subprotocol}")
+            else:
+                logger.debug("No WebSocket subprotocol negotiated")
+
+    async def _initialize_rpc_layer(self, raw_ws: Any) -> None:
+        """Initialize RPC layer with serialization and channel setup.
+
+        Parameters
+        ----------
+        raw_ws : Any
+            Raw WebSocket connection.
+
+        Raises
+        ------
+        ValidationError
+            If validation fails during initialization.
+        ValueError
+            If configuration values are invalid.
+        TypeError
+            If type errors occur during initialization.
+        """
+        logger.debug(f"Wrapping WebSocket with {self._serializing_socket_cls.__name__}")
+        # Conditionally pass max_message_size to prevent DoS via large payloads
+        # Some serializers (e.g., BinarySerializingWebSocket) don't support this parameter
+        if self._max_message_size is not None:
+            try:
+                self.ws = self._serializing_socket_cls(raw_ws, max_message_size=self._max_message_size)  # type: ignore[call-arg]
+            except TypeError as e:
+                # Serializer doesn't support max_message_size parameter
+                if "max_message_size" in str(e):
+                    logger.warning(
+                        f"{self._serializing_socket_cls.__name__} doesn't support max_message_size parameter, "
+                        f"using without size limit"
+                    )
+                    self.ws = self._serializing_socket_cls(raw_ws)  # type: ignore[call-arg]
+                else:
+                    raise
+        else:
+            self.ws = self._serializing_socket_cls(raw_ws)
+
+        # Create RPC channel with production hardening parameters:
+        # - max_pending_requests: Prevents memory exhaustion from request flooding
+        # - max_connection_duration: Auto-closes long-lived connections for rotation
+        # - debug_config: Controls error disclosure to prevent information leakage
+        # - subprotocol: Store negotiated WebSocket subprotocol for runtime checks
+        negotiated_subprotocol = (
+            raw_ws.subprotocol if hasattr(raw_ws, "subprotocol") else None
+        )
+        self.channel = RpcChannel(
+            self.methods,
+            self.ws,
+            default_response_timeout=self._default_response_timeout,
+            max_pending_requests=self._max_pending_requests,
+            max_connection_duration=self._max_connection_duration,
+            debug_config=self.config.connection.debug,
+            subprotocol=negotiated_subprotocol,
+            connect_callbacks=self._on_connect,
+            disconnect_callbacks=self._on_disconnect,
+        )
+
+    async def _start_background_tasks(self, raw_ws: Any) -> None:
+        """Start background tasks (reader, keepalive) and verify connection.
+
+        Parameters
+        ----------
+        raw_ws : Any
+            Raw WebSocket connection.
+
+        Raises
+        ------
+        Exception
+            If tasks fail to start or connection verification fails.
+        """
+        # Start background message reader task (runs continuously until closed)
+        self._read_task = asyncio.create_task(self.reader())
+
+        # Initialize and start keep-alive if enabled (interval > 0)
+        # Keep-alive detects unresponsive connections via periodic pings
+        # Protocol pings (WebSocket ping/pong frames) are 80-90% more efficient
+        # than RPC pings but RPC pings test the full message processing pipeline
+        if self.config.keepalive.enabled:
+            self._keepalive = RpcKeepalive(
+                interval=self.config.keepalive.interval,
+                max_consecutive_failures=self.config.keepalive.max_consecutive_failures,
+                websocket=raw_ws,  # Raw WebSocket for protocol-level pings
+                close_fn=self.close,  # Bound method - triggers cleanup
+                use_protocol_ping=self.config.keepalive.use_protocol_ping,
+                ping_fn=self.ping,  # Bound method - fallback for RPC pings
+            )
+            self._keepalive.start()
+
+        # Verify the RPC layer is working (not just socket connectivity)
+        # This performs actual RPC pings with retries to ensure bidirectional communication
+        await self.wait_on_rpc_ready()
+
+    async def __connect__(self) -> WebSocketRpcClient:
+        """Internal method to establish the WebSocket connection and initialize the RPC channel.
 
         This performs the actual connection steps:
+
         1. Create WebSocket connection
         2. Wrap it with serialization
         3. Set up the RPC channel
@@ -217,97 +572,49 @@ class WebSocketRpcClient:
         6. Check that RPC layer is responsive
         7. Trigger connect callbacks
 
-        Returns:
-            WebSocketRpcClient: Self reference for chaining.
+        Returns
+        -------
+        WebSocketRpcClient
+            Self reference for chaining.
 
-        Raises:
-            Various exceptions from websockets.connect() or during initialization.
+        Raises
+        ------
+        ConnectionRefusedError
+            If the server refuses the connection.
+        ConnectionClosedError
+            If the connection is closed during initialization.
+        ConnectionClosedOK
+            If the connection is closed gracefully.
+        InvalidStatus
+            If the server returns an invalid HTTP status code.
+        WebSocketException
+            For other WebSocket-related errors.
+        OSError
+            For network-level errors.
+        ValidationError
+            For data validation errors during connection.
+        ValueError
+            For configuration or state errors.
+        TypeError
+            For type-related errors during initialization.
+        RuntimeError
+            For unexpected state errors.
         """
         try:
             logger.info(f"Connecting to {self.uri}...")
 
             # Step 1: Create WebSocket connection with subprotocol negotiation
-            # This can raise connection-related exceptions
-            connect_kwargs = self.connect_kwargs.copy()
+            connect_kwargs = self._prepare_connection_kwargs()
+            raw_ws = await self._establish_websocket(connect_kwargs)
 
-            # Add subprotocols to connect_kwargs if configured
-            if self.config.websocket and self.config.websocket.subprotocols:
-                connect_kwargs["subprotocols"] = self.config.websocket.subprotocols
-                logger.debug(
-                    f"Creating WebSocket connection to {self.uri} with subprotocols: "
-                    f"{self.config.websocket.subprotocols}"
-                )
-            else:
-                logger.debug(
-                    f"Creating WebSocket connection to {self.uri} without subprotocol negotiation"
-                )
-
-            # Add compression to connect_kwargs if configured
-            # The websockets library supports permessage-deflate extension natively
-            if self.config.websocket and self.config.websocket.compression:
-                connect_kwargs["compression"] = self.config.websocket.compression
-                logger.debug(
-                    f"Enabling WebSocket compression: {self.config.websocket.compression} "
-                    f"(threshold: {self.config.websocket.compression_threshold} bytes)"
-                )
-            else:
-                # Explicitly disable compression if not configured
-                connect_kwargs["compression"] = None
-                logger.debug("WebSocket compression disabled")
-
-            logger.debug(f"Connection parameters: {connect_kwargs}")
-            raw_ws = await websockets.connect(self.uri, **connect_kwargs)
-
-            # Log negotiated subprotocol
-            if hasattr(raw_ws, "subprotocol") and raw_ws.subprotocol:
-                logger.info(f"WebSocket subprotocol negotiated: {raw_ws.subprotocol}")
-            else:
-                logger.debug("No WebSocket subprotocol negotiated")
+            # Validate negotiated subprotocol
+            await self._validate_subprotocol(raw_ws)
 
             # Step 2-4: Initialize RPC layer (wrap socket, create channel, register handlers)
             # IMPORTANT: We use nested try-except blocks to ensure proper cleanup at each stage.
             # If RPC initialization fails, we need to close the raw WebSocket before re-raising.
             try:
-                logger.debug(
-                    f"Wrapping WebSocket with {self._serializing_socket_cls.__name__}"
-                )
-                # Conditionally pass max_message_size to prevent DoS via large payloads
-                # Some serializers (e.g., BinarySerializingWebSocket) don't support this parameter
-                if self._max_message_size is not None:
-                    try:
-                        self.ws = self._serializing_socket_cls(raw_ws, max_message_size=self._max_message_size)  # type: ignore[call-arg]
-                    except TypeError as e:
-                        # Serializer doesn't support max_message_size parameter
-                        if "max_message_size" in str(e):
-                            logger.warning(
-                                f"{self._serializing_socket_cls.__name__} doesn't support max_message_size parameter, "
-                                f"using without size limit"
-                            )
-                            self.ws = self._serializing_socket_cls(raw_ws)
-                        else:
-                            raise
-                else:
-                    self.ws = self._serializing_socket_cls(raw_ws)
-
-                # Create RPC channel with production hardening parameters:
-                # - max_pending_requests: Prevents memory exhaustion from request flooding
-                # - max_connection_duration: Auto-closes long-lived connections for rotation
-                # - debug_config: Controls error disclosure to prevent information leakage
-                # - subprotocol: Store negotiated WebSocket subprotocol for runtime checks
-                negotiated_subprotocol = (
-                    raw_ws.subprotocol if hasattr(raw_ws, "subprotocol") else None
-                )
-                self.channel = RpcChannel(
-                    self.methods,
-                    self.ws,
-                    default_response_timeout=self._default_response_timeout,
-                    max_pending_requests=self._max_pending_requests,
-                    max_connection_duration=self._max_connection_duration,
-                    debug_config=self.config.connection.debug,
-                    subprotocol=negotiated_subprotocol,
-                    connect_callbacks=self._on_connect,
-                    disconnect_callbacks=self._on_disconnect,
-                )
+                await self._initialize_rpc_layer(raw_ws)
 
             except (ValidationError, ValueError, TypeError) as e:
                 # RPC initialization failed (bad config, validation error, etc.)
@@ -320,27 +627,7 @@ class WebSocketRpcClient:
             # CRITICAL: These tasks depend on the channel being initialized above.
             # If any fail, we must clean up ALL resources (ws, channel, tasks).
             try:
-                # Start background message reader task (runs continuously until closed)
-                self._read_task = asyncio.create_task(self.reader())
-
-                # Initialize and start keep-alive if enabled (interval > 0)
-                # Keep-alive detects unresponsive connections via periodic pings
-                # Protocol pings (WebSocket ping/pong frames) are 80-90% more efficient
-                # than RPC pings but RPC pings test the full message processing pipeline
-                if self.config.keepalive.enabled:
-                    self._keepalive = RpcKeepalive(
-                        interval=self.config.keepalive.interval,
-                        max_consecutive_failures=self.config.keepalive.max_consecutive_failures,
-                        websocket=raw_ws,  # Raw WebSocket for protocol-level pings
-                        close_fn=self.close,  # Bound method - triggers cleanup
-                        use_protocol_ping=self.config.keepalive.use_protocol_ping,
-                        ping_fn=self.ping,  # Bound method - fallback for RPC pings
-                    )
-                    self._keepalive.start()
-
-                # Verify the RPC layer is working (not just socket connectivity)
-                # This performs actual RPC pings with retries to ensure bidirectional communication
-                await self.wait_on_rpc_ready()
+                await self._start_background_tasks(raw_ws)
 
             except Exception as e:
                 # Post-initialization failure (reader start failed, ping timeout, etc.)
@@ -394,9 +681,10 @@ class WebSocketRpcClient:
             raise
 
     async def _cleanup_partial_init(self) -> None:
-        """
-        Clean up resources after a failed connection attempt.
+        """Clean up resources after a failed connection attempt.
 
+        Notes
+        -----
         This method is async to properly await task cancellations.
         """
         if self.ws is not None:
@@ -411,32 +699,34 @@ class WebSocketRpcClient:
         await self.cancel_tasks()
 
     async def __aenter__(self) -> WebSocketRpcClient:
-        """
-        Async context manager entry.
+        """Async context manager entry.
 
         Establishes connection with retry logic if configured.
 
-        Returns:
-            WebSocketRpcClient: The connected client instance.
+        Returns
+        -------
+        WebSocketRpcClient
+            The connected client instance.
         """
         connect_with_retry = self._retry_manager.wrap(self.__connect__)
         return await connect_with_retry()
 
     async def __aexit__(self, *args: Any, **kwargs: Any) -> None:
-        """
-        Async context manager exit.
+        """Async context manager exit.
 
         Ensures clean shutdown of the connection and associated resources.
         """
         await self.close()
 
     async def close(self) -> None:
-        """
-        Close the WebSocket connection and clean up resources.
+        """Close the WebSocket connection and clean up resources.
 
         This method is idempotent and can be safely called multiple times.
 
-        This method:
+        Notes
+        -----
+        This method performs the following steps:
+
         1. Checks if already closing (prevents race conditions)
         2. Closes the WebSocket connection if open
         3. Notifies disconnect handlers
@@ -448,12 +738,14 @@ class WebSocketRpcClient:
         # - Keepalive (on ping failure)
         # - Reader task (on connection error)
         # - Context manager __aexit__
-        # Without this guard, we'd get duplicate callbacks and task cancellation errors
-        if self._closing:
-            logger.debug("Close already in progress, skipping duplicate call")
-            return
+        # Use lock to ensure atomic check-and-set of closing flag
+        async with self._close_lock:
+            if self._closing:
+                logger.debug("Close already in progress, skipping duplicate call")
+                return
 
-        self._closing = True
+            self._closing = True
+
         logger.info("Closing RPC client...")
 
         # Signal that connection is closed (unblocks any wait_on_reader() calls)
@@ -481,9 +773,10 @@ class WebSocketRpcClient:
         await self.cancel_tasks()
 
     async def cancel_tasks(self) -> None:
-        """
-        Cancel all background tasks (keep-alive and reader) and wait for cleanup.
+        """Cancel all background tasks (keep-alive and reader) and wait for cleanup.
 
+        Notes
+        -----
         This method is async to properly await task cancellations, ensuring
         clean shutdown without warnings about un-awaited coroutines.
         """
@@ -495,9 +788,10 @@ class WebSocketRpcClient:
         await self.cancel_reader_task()
 
     async def cancel_reader_task(self) -> None:
-        """
-        Cancel the reader task if it exists and wait for cancellation to complete.
+        """Cancel the reader task if it exists and wait for cancellation to complete.
 
+        Notes
+        -----
         This ensures proper cleanup and prevents warnings about un-awaited
         cancellation exceptions.
         """
@@ -513,14 +807,24 @@ class WebSocketRpcClient:
             logger.debug("Reader task cancelled successfully")
 
     async def reader(self) -> None:
-        """
-        Background task that continuously reads messages from the WebSocket.
+        """Background task that continuously reads messages from the WebSocket.
 
         This task runs until the connection is closed or cancelled.
         Each received message is processed through the RPC channel.
 
-        Raises:
-            RpcInvalidStateError: If WebSocket or channel is not properly initialized.
+        Raises
+        ------
+        RpcInvalidStateError
+            If WebSocket or channel is not properly initialized.
+
+        Notes
+        -----
+        Implements two layers of timeout protection:
+
+        1. MESSAGE_RECEIVE_TIMEOUT: Prevents Slowloris-style attacks where
+           malicious servers send partial frames slowly
+        2. idle_timeout: Detects stale connections where server crashes
+           without sending proper TCP FIN/RST
         """
         # Validate connection state before starting reader loop
         self._validate_connected()
@@ -532,12 +836,52 @@ class WebSocketRpcClient:
         if self.channel is None:
             raise RpcInvalidStateError("Channel must be initialized")
 
+        # Track last message time for idle detection
+        import time
+
+        last_message_time = time.monotonic()
+
         try:
             # Main reader loop - continuously read and process messages
             while True:
-                raw_message = await self.ws.recv()
-                logger.debug("Received message via reader")
-                await self.channel.on_message(raw_message)
+                try:
+                    # Add timeout wrapper to prevent Slowloris attacks
+                    # Slowloris: malicious server sends partial WebSocket frames slowly
+                    # to tie up client resources without completing messages
+                    raw_message = await asyncio.wait_for(
+                        self.ws.recv(), timeout=MESSAGE_RECEIVE_TIMEOUT
+                    )
+                    logger.debug("Received message via reader")
+                    last_message_time = time.monotonic()  # Update activity timestamp
+                    await self.channel.on_message(raw_message)
+
+                except asyncio.TimeoutError:
+                    # Message receive timeout - possible Slowloris attack or network issue
+                    # Check if this is idle timeout (configured) or message receive timeout
+                    elapsed = time.monotonic() - last_message_time
+
+                    if (
+                        self.config.connection.idle_timeout is not None
+                        and elapsed >= self.config.connection.idle_timeout
+                    ):
+                        # Idle timeout: no activity for configured duration
+                        # This detects stale connections where server crashed without
+                        # sending TCP FIN/RST (power failure, firewall drop, etc.)
+                        logger.error(
+                            f"Connection idle timeout ({self.config.connection.idle_timeout}s). "
+                            f"No messages received for {elapsed:.1f}s. Closing stale connection."
+                        )
+                    else:
+                        # Message receive timeout: took too long to receive a single message
+                        # This is a Slowloris-style attack or severe network degradation
+                        logger.error(
+                            f"Message receive timeout ({MESSAGE_RECEIVE_TIMEOUT}s). "
+                            f"Possible slow-read attack or network issue."
+                        )
+
+                    # Either way, close the connection
+                    asyncio.create_task(self.close())
+                    break
 
         except asyncio.CancelledError:
             # Normal cancellation during shutdown (from cancel_reader_task())
@@ -564,10 +908,18 @@ class WebSocketRpcClient:
             else:
                 logger.info("Connection was terminated.")
 
-            # Signal closed state and trigger full cleanup
-            # Use create_task to avoid reader task waiting for its own cancellation
+            # Signal closed state
             self._connection_closed.set()
-            asyncio.create_task(self.close())
+
+            # Decide whether to reconnect or close permanently
+            if self.config.connection.auto_reconnect:
+                # Attempt automatic reconnection with exponential backoff
+                logger.info("Auto-reconnect enabled, attempting to reconnect...")
+                asyncio.create_task(self._attempt_reconnection())
+            else:
+                # No auto-reconnect - trigger full cleanup
+                # Use create_task to avoid reader task waiting for its own cancellation
+                asyncio.create_task(self.close())
 
         except (ValidationError, ValueError, TypeError, RuntimeError, KeyError) as e:
             # Message processing errors indicate protocol violations or bugs:
@@ -581,9 +933,10 @@ class WebSocketRpcClient:
             raise
 
     async def wait_on_rpc_ready(self) -> None:
-        """
-        Verify that the RPC channel is ready by sending test pings.
+        """Verify that the RPC channel is ready by sending test pings.
 
+        Notes
+        -----
         This confirms not just socket connectivity but RPC functionality.
         Makes multiple attempts with timeout before giving up.
         """
@@ -633,14 +986,17 @@ class WebSocketRpcClient:
                 attempt_count += 1
 
     async def ping(self) -> Any:
-        """
-        Send a ping request to the server and wait for a response.
+        """Send a ping request to the server and wait for a response.
 
-        Returns:
+        Returns
+        -------
+        Any
             The response object from the server's ping method.
 
-        Raises:
-            RpcInvalidStateError: If the RPC channel is not initialized.
+        Raises
+        ------
+        RpcInvalidStateError
+            If the RPC channel is not initialized.
         """
         # Validate that channel is initialized
         self._validate_connected()
@@ -651,9 +1007,10 @@ class WebSocketRpcClient:
         return answer
 
     async def wait_on_reader(self) -> None:
-        """
-        Wait for the reader task to complete.
+        """Wait for the reader task to complete.
 
+        Notes
+        -----
         Useful for graceful shutdown or waiting for processing to finish.
         """
         if self._read_task:
@@ -668,21 +1025,30 @@ class WebSocketRpcClient:
         args: dict[str, Any] | None = None,
         timeout: float | None = None,
     ) -> Any:
-        """
-        Call a remote method on the server and wait for the response.
+        """Call a remote method on the server and wait for the response.
 
-        Args:
-            name: Name of the method to call (as defined on the server's RpcMethods)
-            args: Keyword arguments to pass to the remote method
-            timeout: Optional custom timeout for this specific call
+        Parameters
+        ----------
+        name : str
+            Name of the method to call (as defined on the server's RpcMethods).
+        args : dict[str, Any] | None, optional
+            Keyword arguments to pass to the remote method.
+        timeout : float | None, optional
+            Optional custom timeout for this specific call.
 
-        Returns:
-            The result returned by the remote method
+        Returns
+        -------
+        Any
+            The result returned by the remote method.
 
-        Raises:
-            RpcInvalidStateError: If the RPC channel is not initialized.
-            Various exceptions from the underlying RPC channel or if the connection
-            is closed.
+        Raises
+        ------
+        RpcInvalidStateError
+            If the RPC channel is not initialized.
+        RpcChannelClosedError
+            If the connection is closed.
+        asyncio.TimeoutError
+            If the call times out.
         """
         # Validate that channel is initialized
         self._validate_connected()
@@ -692,26 +1058,27 @@ class WebSocketRpcClient:
 
     @property
     def other(self) -> Any:
-        """
-        Proxy object for calling remote methods.
+        """Proxy object for calling remote methods.
 
-        This allows convenient attribute-style access to remote methods:
-        ```python
-        result = await client.other.remote_method(param1=value1)
-        ```
+        This allows convenient attribute-style access to remote methods::
 
-        Returns:
-            RpcCaller: Proxy object for remote method calls
+            result = await client.other.remote_method(param1=value1)
+
+        Returns
+        -------
+        RpcCaller
+            Proxy object for remote method calls.
         """
         return self.channel.other if self.channel else None
 
     @property
     def is_connected(self) -> bool:
-        """
-        Check if the client is currently connected.
+        """Check if the client is currently connected.
 
-        Returns:
-            bool: True if connected and operational, False otherwise
+        Returns
+        -------
+        bool
+            True if connected and operational, False otherwise.
         """
         return (
             self.ws is not None
@@ -724,42 +1091,47 @@ class WebSocketRpcClient:
 
     @property
     def is_closed_event(self) -> asyncio.Event:
-        """
-        Event that is set when the connection is closed.
+        """Event that is set when the connection is closed.
 
         This event is set when:
+
         - The reader task detects a ConnectionClosed exception
         - The reader task is cancelled
         - The close() method is called
         - Any exception occurs in the reader task
 
-        Returns:
-            asyncio.Event: Event that will be set when the connection closes.
+        Returns
+        -------
+        asyncio.Event
+            Event that will be set when the connection closes.
         """
         return self._connection_closed
 
     @property
     def close_code(self) -> int | None:
-        """
-        WebSocket close code from the last connection closure.
+        """WebSocket close code from the last connection closure.
 
-        Returns:
-            int | None: The close code if available, None otherwise.
-                       Common codes include:
-                       - 1000: Normal closure
-                       - 1001: Going away
-                       - 1002: Protocol error
-                       - 1003: Unsupported data
-                       - 1006: Abnormal closure (no close frame received)
+        Returns
+        -------
+        int | None
+            The close code if available, None otherwise.
+            Common codes include:
+
+            - 1000: Normal closure
+            - 1001: Going away
+            - 1002: Protocol error
+            - 1003: Unsupported data
+            - 1006: Abnormal closure (no close frame received)
         """
         return self._close_code
 
     @property
     def close_reason(self) -> str | None:
-        """
-        WebSocket close reason from the last connection closure.
+        """WebSocket close reason from the last connection closure.
 
-        Returns:
-            str | None: The close reason string if available, None otherwise.
+        Returns
+        -------
+        str | None
+            The close reason string if available, None otherwise.
         """
         return self._close_reason

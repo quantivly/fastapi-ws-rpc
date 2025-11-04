@@ -1,5 +1,5 @@
 """
-fastapi_websocket_rpc - WebSocket RPC for FastAPI
+fastapi_ws_rpc - WebSocket RPC for FastAPI
 
 A production-ready WebSocket RPC implementation for FastAPI applications.
 Supports bidirectional JSON-RPC 2.0 communication over WebSockets.

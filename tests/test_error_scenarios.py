@@ -1215,7 +1215,6 @@ class TestErrorDisclosure:
         self,
         method_invoker: RpcMethodInvoker,
         promise_manager: RpcPromiseManager,
-        caplog: Any,
     ) -> None:
         """
         Test that server-side logging always includes full error details.
@@ -1226,7 +1225,7 @@ class TestErrorDisclosure:
         - Method name is logged
         - Helps with server-side debugging without exposing to clients
         """
-        import logging
+        from unittest.mock import patch
 
         from fastapi_ws_rpc.config import RpcDebugConfig
 
@@ -1244,28 +1243,23 @@ class TestErrorDisclosure:
             "method": "failing_method",
         }
 
-        # Set logging level to capture ERROR logs from RPC_PROTOCOL logger
-        with caplog.at_level(logging.ERROR, logger="RPC_PROTOCOL"):
+        # Mock the logger to verify it's called with full details
+        with patch("fastapi_ws_rpc._internal.protocol_handler.logger") as mock_logger:
             await handler.handle_message(message)
 
-        # Verify server-side logs include full details
-        # Note: caplog.text contains the full log output
-        log_records = caplog.records
-        assert len(log_records) > 0, "Expected at least one log record"
+            # Verify logger.exception was called
+            assert (
+                mock_logger.exception.called
+            ), "Expected logger.exception to be called"
 
-        # Find the error log for the failed method
-        error_log = None
-        for record in log_records:
-            if record.levelname == "ERROR" and "failing_method" in record.message:
-                error_log = record
-                break
+            # Get the call args
+            call_args = mock_logger.exception.call_args[0]
+            log_message = call_args[0]
 
-        assert error_log is not None, "Expected ERROR log for failing_method"
-        assert (
-            "RuntimeError" in str(error_log.exc_info)
-            or "RuntimeError" in error_log.message
-        )
-        assert "Method failed" in error_log.message
+            # Verify the log message contains full error details
+            assert "Failed to execute method" in log_message
+            assert "failing_method" in log_message
+            assert "Method failed" in log_message
 
         # But client response should still be sanitized
         call_args = mock_send.call_args[0][0]

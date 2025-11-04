@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import tenacity
-from tenacity import retry, wait
+from tenacity import retry, stop_after_attempt, wait
 from tenacity.retry import retry_if_exception
 from websockets.exceptions import InvalidStatus
 
@@ -111,6 +111,9 @@ class RpcRetryManager:
     # Default retry configuration
     DEFAULT_CONFIG: dict[str, Any] = {
         "wait": wait.wait_random_exponential(min=0.1, max=120),
+        "stop": stop_after_attempt(
+            10
+        ),  # MUST have stop condition to prevent infinite retries
         "retry": retry_if_exception(_is_not_forbidden),
         "reraise": True,
         "retry_error_callback": _log_retry_error,

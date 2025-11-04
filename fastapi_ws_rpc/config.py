@@ -70,6 +70,12 @@ class WebSocketConnectionConfig:
         Minimum message size in bytes to trigger compression. Messages smaller
         than this threshold are sent uncompressed to avoid overhead. Default is
         1KB which is optimal for most use cases.
+    ping_timeout : float | None, default None
+        Timeout in seconds for WebSocket ping/pong frames. If None, uses the
+        websockets library default of 20 seconds. This should typically be set
+        to 2-3x the ping_interval (if using protocol-level pings) to account
+        for network latency. For production with 30s ping_interval, recommend
+        setting this to 40-60 seconds to prevent premature disconnections.
 
     Examples
     --------
@@ -91,6 +97,10 @@ class WebSocketConnectionConfig:
     >>> assert config.subprotocols is None
     >>> assert config.compression == "deflate"
 
+    >>> # Configure ping_timeout for production (60s timeout for 30s ping interval)
+    >>> config = WebSocketConnectionConfig(ping_timeout=60.0)
+    >>> assert config.ping_timeout == 60.0
+
     Notes
     -----
     Compression uses the permessage-deflate WebSocket extension which is widely
@@ -106,6 +116,7 @@ class WebSocketConnectionConfig:
     subprotocols: list[str] | None = field(default_factory=lambda: ["jsonrpc2.0"])
     compression: str | None = "deflate"
     compression_threshold: int = 1024  # 1KB
+    ping_timeout: float | None = None
 
     def validate(self) -> None:
         """Explicitly validate the configuration.
@@ -113,8 +124,8 @@ class WebSocketConnectionConfig:
         Raises
         ------
         ValueError
-            If compression is not None or "deflate", or if compression_threshold
-            is negative.
+            If compression is not None or "deflate", if compression_threshold
+            is negative, or if ping_timeout is negative.
         """
         if self.compression is not None and self.compression != "deflate":
             raise ValueError(
@@ -127,13 +138,18 @@ class WebSocketConnectionConfig:
                 f"compression_threshold must be non-negative, got {self.compression_threshold}"
             )
 
+        if self.ping_timeout is not None and self.ping_timeout < 0:
+            raise ValueError(
+                f"ping_timeout must be non-negative, got {self.ping_timeout}"
+            )
+
 
 @dataclass(frozen=True)
 class RpcConnectionConfig:
     """Configuration for RPC connection lifecycle and timeouts.
 
     Controls how long connections stay alive, how long to wait for responses,
-    and when to consider a connection idle.
+    when to consider a connection idle, and automatic reconnection behavior.
 
     Parameters
     ----------
@@ -147,6 +163,17 @@ class RpcConnectionConfig:
         Time in seconds of inactivity after which the connection is considered
         idle and should be closed. If None, idle connections stay open.
         Replaces the old receive_timeout concept.
+    auto_reconnect : bool, default False
+        Enable automatic reconnection when the connection is lost. When True,
+        the client will attempt to reconnect with exponential backoff up to
+        max_reconnect_attempts. Default is False for backward compatibility.
+    reconnect_delay : float, default 5.0
+        Initial delay in seconds before the first reconnection attempt.
+        Subsequent attempts use exponential backoff (multiplied by 2).
+        Maximum delay is capped at 60 seconds to prevent excessively long waits.
+    max_reconnect_attempts : int, default 10
+        Maximum number of reconnection attempts before giving up and closing
+        the connection. Only used when auto_reconnect is True.
     debug : RpcDebugConfig, default RpcDebugConfig()
         Debug configuration controlling error disclosure. Defaults to
         production-safe mode (debug_mode=False) for v1.0.0 security.
@@ -179,11 +206,22 @@ class RpcConnectionConfig:
     ...     websocket=WebSocketConnectionConfig(subprotocols=["custom.v1"])
     ... )
     >>> assert config.websocket.subprotocols == ["custom.v1"]
+
+    >>> # Enable automatic reconnection with custom settings
+    >>> config = RpcConnectionConfig(
+    ...     auto_reconnect=True,
+    ...     reconnect_delay=2.0,
+    ...     max_reconnect_attempts=5
+    ... )
+    >>> assert config.auto_reconnect
     """
 
     default_response_timeout: float | None = None
     max_connection_duration: float | None = None
     idle_timeout: float | None = None
+    auto_reconnect: bool = False
+    reconnect_delay: float = 5.0
+    max_reconnect_attempts: int = 10
     debug: RpcDebugConfig = field(default_factory=RpcDebugConfig)
     websocket: WebSocketConnectionConfig = field(
         default_factory=WebSocketConnectionConfig
@@ -195,8 +233,9 @@ class RpcConnectionConfig:
         Raises
         ------
         ValueError
-            If any timeout values are negative, or if response_timeout
-            is greater than or equal to max_connection_duration.
+            If any timeout values are negative, if response_timeout
+            is greater than or equal to max_connection_duration, or if
+            reconnection parameters are invalid.
         """
         if (
             self.default_response_timeout is not None
@@ -226,6 +265,17 @@ class RpcConnectionConfig:
             raise ValueError(
                 f"default_response_timeout ({self.default_response_timeout}s) must be "
                 f"less than max_connection_duration ({self.max_connection_duration}s)"
+            )
+
+        # Validate reconnection parameters
+        if self.reconnect_delay < 0:
+            raise ValueError(
+                f"reconnect_delay must be non-negative, got {self.reconnect_delay}"
+            )
+
+        if self.max_reconnect_attempts < 1:
+            raise ValueError(
+                f"max_reconnect_attempts must be at least 1, got {self.max_reconnect_attempts}"
             )
 
     def validate(self) -> None:
