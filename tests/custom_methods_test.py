@@ -6,10 +6,11 @@ import pytest
 import uvicorn
 from fastapi import APIRouter, FastAPI, WebSocket
 
+from fastapi_ws_rpc.config import RpcConnectionConfig, WebSocketRpcClientConfig
 from fastapi_ws_rpc.rpc_methods import RpcMethodsBase
 from fastapi_ws_rpc.utils import gen_uid
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
-from fastapi_ws_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
+from fastapi_ws_rpc.websocket_rpc_endpoint import WebSocketRpcEndpoint
 
 # Add parent path to use local src as package for tests
 sys.path.append(
@@ -36,7 +37,7 @@ def setup_calc_server():
     app = FastAPI()
     router = APIRouter()
     # expose calculator methods
-    endpoint = WebsocketRPCEndpoint(RpcCalculator())
+    endpoint = WebSocketRpcEndpoint(RpcCalculator())
     # init the endpoint
 
     @router.websocket("/ws/{client_id}")
@@ -61,11 +62,14 @@ async def test_custom_server_methods(server):
     """
     Test rpc with calling custom methods on server sides
     """
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
     async with WebSocketRpcClient(
         uri,
         # we don't expose anything to the server
         RpcMethodsBase(),
-        default_response_timeout=4,
+        config=config,
     ) as client:
         import random
 

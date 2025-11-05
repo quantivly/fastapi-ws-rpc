@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 import logging
 import os
 from enum import Enum
 from logging.config import dictConfig
-from typing import NewType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from loguru import Logger as LoguruLogger  # type: ignore[import-not-found]
 
 ENV_VAR = "WS_RPC_LOGGING"
 
@@ -18,12 +23,9 @@ class LoggingModes(Enum):
     LOGURU = 3
 
 
-LoggingMode = NewType("LoggingMode", LoggingModes)
-
-
 class LoggingConfig:
     def __init__(self) -> None:
-        self._mode = None
+        self._mode: LoggingModes | None = None
 
     config_template = {
         "version": 1,
@@ -56,16 +58,21 @@ class LoggingConfig:
         },
     }
 
-    def get_mode(self):
+    def get_mode(self) -> LoggingModes:
         # if no one set the mode - set default from ENV or hardcoded default
         if self._mode is None:
             mode = LoggingModes.__members__.get(
                 os.environ.get(ENV_VAR, "").upper(), LoggingModes.SIMPLE
             )
             self.set_mode(mode)
+        # Runtime check to protect against -O optimization flag that disables assertions
+        if self._mode is None:
+            raise RuntimeError("Logging mode must be set by set_mode() method")
         return self._mode
 
-    def set_mode(self, mode: LoggingMode = LoggingModes.UVICORN, level=logging.INFO):
+    def set_mode(
+        self, mode: LoggingModes = LoggingModes.UVICORN, level: int = logging.INFO
+    ) -> None:
         """
         Configure logging. this method calls 'logging.config.dictConfig()' to enable
         quick setup of logging. Call this method before starting the app.
@@ -73,19 +80,19 @@ class LoggingConfig:
         library are all nested under "fastapi_ws_rpc" logger name)
 
         Args:
-            mode (LoggingMode, optional): The mode to set logging to. Defaults to
+            mode (LoggingModes, optional): The mode to set logging to. Defaults to
             LoggingModes.UVICORN.
+            level (int, optional): The logging level. Defaults to logging.INFO.
         """
         self._mode = mode
         logging_config = self.config_template.copy()
         # add logs beside uvicorn
         if mode == LoggingModes.UVICORN:
             logging_config["loggers"] = self.UVICORN_LOGGERS.copy()
-            logging_config["loggers"]["fastapi_ws_rpc"]["level"] = level
+            # Type ignore needed because dict structure is dynamic
+            logging_config["loggers"]["fastapi_ws_rpc"]["level"] = level  # type: ignore[index]
             dictConfig(logging_config)
-        elif mode == LoggingModes.SIMPLE:
-            pass
-        elif mode == LoggingModes.LOGURU:
+        elif mode == LoggingModes.SIMPLE or mode == LoggingModes.LOGURU:
             pass
         # no logs
         else:
@@ -97,17 +104,22 @@ class LoggingConfig:
 logging_config = LoggingConfig()
 
 
-def get_logger(name):
+def get_logger(name: str) -> logging.Logger | LoguruLogger:
     """
     Get a logger object to log with.
     Called by inner modules for logging.
+
+    Args:
+        name (str): The name of the logger module.
+
+    Returns:
+        Logger object (either standard logging.Logger or loguru logger).
     """
     mode = logging_config.get_mode()
     # logging through loguru
     if mode == LoggingModes.LOGURU:
         from loguru import logger
-    else:
-        # regular python logging
-        logger = logging.getLogger(f"fastapi_ws_rpc.{name}")
 
-    return logger
+        return logger
+    # regular python logging
+    return logging.getLogger(f"fastapi_ws_rpc.{name}")

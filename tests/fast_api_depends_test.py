@@ -4,12 +4,13 @@ from multiprocessing import Process
 import pytest
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, Header, WebSocket
-from websockets.exceptions import InvalidStatusCode
+from websockets.exceptions import InvalidStatus
 
+from fastapi_ws_rpc.config import RpcConnectionConfig, WebSocketRpcClientConfig
 from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
 from fastapi_ws_rpc.utils import gen_uid
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
-from fastapi_ws_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
+from fastapi_ws_rpc.websocket_rpc_endpoint import WebSocketRpcEndpoint
 
 # Configurable
 PORT = int(os.environ.get("PORT") or "8000")
@@ -29,11 +30,13 @@ async def check_token_header(websocket: WebSocket, x_token: str = Header(...)):
 def setup_server():
     app = FastAPI()
     router = APIRouter()
-    endpoint = WebsocketRPCEndpoint(RpcUtilityMethods())
+    endpoint = WebSocketRpcEndpoint(RpcUtilityMethods())
 
     @router.websocket("/ws/{client_id}")
     async def websocket_rpc_endpoint(
-        websocket: WebSocket, client_id: str, token=Depends(check_token_header)
+        websocket: WebSocket,
+        client_id: str,
+        token=Depends(check_token_header),  # noqa: B008
     ):
         await endpoint.main_loop(websocket, client_id)
 
@@ -55,11 +58,14 @@ async def test_valid_token(server):
     """
     Test basic RPC with a simple echo
     """
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4),
+        websocket_kwargs={"additional_headers": [("X-TOKEN", SECRET_TOKEN)]},
+    )
     async with WebSocketRpcClient(
         uri,
         RpcUtilityMethods(),
-        default_response_timeout=4,
-        extra_headers=[("X-TOKEN", SECRET_TOKEN)],
+        config=config,
     ) as client:
         text = "Hello World!"
         response = await client.other.echo(text=text)
@@ -71,15 +77,20 @@ async def test_invalid_token(server):
     """
     Test basic RPC with a simple echo
     """
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4),
+        websocket_kwargs={"additional_headers": [("X-TOKEN", "bad-token")]},
+    )
     try:
         async with WebSocketRpcClient(
             uri,
             RpcUtilityMethods(),
-            default_response_timeout=4,
-            extra_headers=[("X-TOKEN", "bad-token")],
+            config=config,
         ) as client:
             assert client is not None
             # if we got here - the server didn't reject us
-            assert False
-    except InvalidStatusCode as e:
-        assert e.status_code == 403
+            raise AssertionError(
+                "Expected server to reject connection with invalid token"
+            )
+    except InvalidStatus as e:
+        assert e.response.status_code == 403

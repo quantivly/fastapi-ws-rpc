@@ -4,7 +4,7 @@ import random
 import uvicorn
 from fastapi import FastAPI
 
-from fastapi_ws_rpc import RpcMethodsBase, WebsocketRPCEndpoint, logger
+from fastapi_ws_rpc import RpcMethodsBase, WebSocketRpcEndpoint, logger
 
 # Set debug logging
 logger.logging_config.set_mode(logger.LoggingModes.UVICORN, logger.logging.DEBUG)
@@ -29,7 +29,7 @@ async def on_connect(channel):
 # Init the FAST-API app
 app = FastAPI()
 # Create an endpoint and load it with the methods to expose
-endpoint = WebsocketRPCEndpoint(ConcatServer(), on_connect=[on_connect])
+endpoint = WebSocketRpcEndpoint(ConcatServer(), on_connect=[on_connect])
 # add the endpoint to the app
 endpoint.register_route(app)
 

@@ -7,10 +7,15 @@ import pytest
 import uvicorn
 from fastapi import FastAPI
 
+from fastapi_ws_rpc.config import (
+    RpcConnectionConfig,
+    RpcKeepaliveConfig,
+    WebSocketRpcClientConfig,
+)
 from fastapi_ws_rpc.logger import LoggingModes, logging_config
 from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
-from fastapi_ws_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
+from fastapi_ws_rpc.websocket_rpc_endpoint import WebSocketRpcEndpoint
 
 # Set debug logs (and direct all logs to UVICORN format)
 logging_config.set_mode(LoggingModes.UVICORN, logging.DEBUG)
@@ -22,7 +27,7 @@ uri = f"ws://localhost:{PORT}/ws"
 
 def setup_server():
     app = FastAPI()
-    endpoint = WebsocketRPCEndpoint(RpcUtilityMethods())
+    endpoint = WebSocketRpcEndpoint(RpcUtilityMethods())
     endpoint.register_route(app)
     uvicorn.run(app, port=PORT)
 
@@ -41,9 +46,10 @@ async def test_echo(server):
     """
     Test basic RPC with a simple echo
     """
-    async with WebSocketRpcClient(
-        uri, RpcUtilityMethods(), default_response_timeout=4
-    ) as client:
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
+    async with WebSocketRpcClient(uri, RpcUtilityMethods(), config=config) as client:
         text = "Hello World!"
         response = await client.other.echo(text=text)
         assert response.result == text
@@ -54,11 +60,12 @@ async def test_ping(server):
     """
     Test basic RPC with a simple ping
     """
-    async with WebSocketRpcClient(
-        uri, RpcUtilityMethods(), default_response_timeout=4
-    ) as client:
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
+    async with WebSocketRpcClient(uri, RpcUtilityMethods(), config=config) as client:
         try:
-            await client.other._ping_()
+            await client.other.ping()
             passed = True
         except Exception:
             logging.exception("Ping test failed")
@@ -71,12 +78,13 @@ async def test_other_channel_id(server):
     """
     Test basic RPC with a simple _get_channel_id_
     """
-    async with WebSocketRpcClient(
-        uri, RpcUtilityMethods(), default_response_timeout=4
-    ) as client:
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
+    async with WebSocketRpcClient(uri, RpcUtilityMethods(), config=config) as client:
         try:
-            response = await client.other._get_channel_id_()
-            assert response.result_type == "str"
+            _ = await client.other._get_channel_id_()
+            # result_type removed in JSON-RPC 2.0 migration - just verify we get a response
             passed = True
         except Exception:
             logging.exception("_get_channel_id test failed")
@@ -89,9 +97,11 @@ async def test_keep_alive(server):
     """
     Test basic RPC with a simple echo + keep alive in the background
     """
-    async with WebSocketRpcClient(
-        uri, RpcUtilityMethods(), default_response_timeout=4, keep_alive=0.1
-    ) as client:
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4),
+        keepalive=RpcKeepaliveConfig(interval=0.1),
+    )
+    async with WebSocketRpcClient(uri, RpcUtilityMethods(), config=config) as client:
         text = "Hello World!"
         response = await client.other.echo(text=text)
         assert response.result == text
@@ -104,9 +114,10 @@ async def test_structured_response(server):
     Test RPC with structured (pydantic model) data response
     Using process details as example data
     """
-    async with WebSocketRpcClient(
-        uri, RpcUtilityMethods(), default_response_timeout=4
-    ) as client:
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
+    async with WebSocketRpcClient(uri, RpcUtilityMethods(), config=config) as client:
         utils = RpcUtilityMethods()
         await utils.get_process_details()
         response = await client.other.get_process_details()

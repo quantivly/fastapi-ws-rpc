@@ -1,13 +1,18 @@
 import asyncio
 
+from fastapi_ws_rpc.config import WebSocketRpcClientConfig
 from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
 
 
 async def run_client(uri):
-    async with WebSocketRpcClient(
-        uri, RpcUtilityMethods(), extra_headers=[("X-TOKEN", "fake-super-secret-token")]
-    ) as client:
+    # Configure additional headers via websocket_kwargs
+    config = WebSocketRpcClientConfig(
+        websocket_kwargs={
+            "additional_headers": [("X-TOKEN", "fake-super-secret-token")]
+        }
+    )
+    async with WebSocketRpcClient(uri, RpcUtilityMethods(), config=config) as client:
         # call echo on the other side (using ".other" syntactic sugar)
         response = await client.other.echo(text="Hello World!")
         print(response)

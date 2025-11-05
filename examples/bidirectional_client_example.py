@@ -3,6 +3,7 @@ This example (along with 'examples/bidirectional_server_example.py')
 builds on top of the simple example and adds- calls from the server to the
 client as well
 """
+
 import asyncio
 
 from fastapi_ws_rpc import RpcMethodsBase, WebSocketRpcClient, logger
@@ -33,6 +34,7 @@ class WaitingClient(RpcMethodsBase):
 
 
 async def run_client(uri):
+    # Using defaults - no need to create config object for simple examples
     async with WebSocketRpcClient(uri, WaitingClient()) as client:
         # wait for the server to allow us to send questions
         await client.channel.methods.can_send_queries.wait()

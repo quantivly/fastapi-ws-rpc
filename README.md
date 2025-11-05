@@ -30,7 +30,7 @@ Method return values are sent back as RPC responses, which the other side can wa
 - As seen at <a href="https://www.youtube.com/watch?v=KP7tPeKhT3o" target="_blank">PyCon IL 2021</a> and <a href="https://www.youtube.com/watch?v=IuMZVWEUvGs" target="_blank">EuroPython 2021</a>
 
 
-Supports and tested on Python >= 3.7
+Supports and tested on Python >= 3.9
 ## Installation 🛠️
 ```
 pip install fastapi_ws_rpc
@@ -62,7 +62,7 @@ getting the response with the return value.
 ```python
 import uvicorn
 from fastapi import FastAPI
-from fastapi_ws_rpc import RpcMethodsBase, WebsocketRPCEndpoint
+from fastapi_ws_rpc import RpcMethodsBase, WebSocketRpcEndpoint
 
 
 # Methods to expose to the clients
@@ -74,7 +74,7 @@ class ConcatServer(RpcMethodsBase):
 # Init the FAST-API app
 app = FastAPI()
 # Create an endpoint and load it with the methods to expose
-endpoint = WebsocketRPCEndpoint(ConcatServer())
+endpoint = WebSocketRpcEndpoint(ConcatServer())
 # add the endpoint to the app
 endpoint.register_route(app, "/ws")
 
@@ -120,6 +120,136 @@ Websockets are ideal to create bi-directional realtime connections over the web.
  - Trigger events (see "tests/trigger_flow_test.py")
  - Node negotiations (see "tests/advanced_rpc_test.py :: test_recursive_rpc_calls")
 
+## Production Features 🚀
+
+**NEW in v1.0.0**: Built-in production hardening features:
+
+- **Message Size Limits** - Prevent DoS attacks via extremely large JSON payloads (default 10MB limit, configurable)
+- **Rate Limiting** - Control request flooding with max pending requests (default 1000, configurable)
+- **Connection Duration Limits** - Automatically close long-lived connections after max age
+- **Enhanced Keepalive** - Consecutive ping failure detection with auto-reconnect (3 failures → close)
+- **State Validation** - Proper connection state checking with meaningful error messages
+- **JSON-RPC 2.0 Compliance** - Full standard error codes and method validation
+- **Notifications** - Fire-and-forget messaging with `notify()` method
+
+### Using Production Features
+
+```python
+from fastapi_ws_rpc import WebSocketRpcEndpoint, WebSocketRpcClient
+
+# Server with production hardening
+endpoint = WebSocketRpcEndpoint(
+    methods,
+    max_message_size=5 * 1024 * 1024,  # 5MB limit
+    max_pending_requests=500,          # Limit concurrent requests
+    max_connection_duration=3600.0,    # Close after 1 hour
+)
+
+# Client with enhanced keepalive
+client = WebSocketRpcClient(
+    uri,
+    methods,
+    keep_alive=5.0,                        # Ping every 5 seconds
+    max_consecutive_ping_failures=3,       # Auto-close after 3 failures
+)
+
+# Send fire-and-forget notifications
+await channel.notify("log_event", {"level": "info", "message": "Processing..."})
+```
+
+### Production Deployment Guide
+
+**1. Certificate Validation**
+
+The library now validates certificate expiry before establishing connections. Ensure your certificates are valid:
+
+```python
+# Client will automatically validate certificate expiry and reject expired certs
+ssl_context = tls_service.get_ssl_context()  # Validates cert is not expired
+client = WebSocketRpcClient(uri, methods, ssl=ssl_context)
+```
+
+**2. Connection Health Monitoring**
+
+Use protocol-level ping/pong (RFC 6455) for reliable health checking:
+
+```python
+from fastapi_ws_rpc import RpcKeepaliveConfig
+
+config = WebSocketRpcClientConfig(
+    keepalive=RpcKeepaliveConfig(
+        interval=30.0,              # Ping every 30 seconds
+        use_protocol_ping=True,     # Use WebSocket protocol ping (recommended)
+        max_failures=3,             # Close after 3 consecutive failures
+    ),
+    websocket_kwargs={
+        "ping_interval": 30,        # WebSocket library ping interval
+        "ping_timeout": 20,         # Pong response timeout
+    }
+)
+```
+
+**3. Memory Management**
+
+Promise cleanup has been optimized in v1.0.0:
+
+- **Immediate cleanup** - Timed-out promises cleaned up immediately (not after 60s)
+- **Reduced TTL** - Promise TTL reduced from 300s to 60s
+- **Automatic cleanup** - Periodic cleanup runs every 60s for edge cases
+
+**4. Failure Modes**
+
+**Scenario: Server Unavailable**
+- Client attempts reconnection with exponential backoff
+- Max 10 attempts with up to 60s delay between attempts
+- Jitter (0-25%) prevents thundering herd
+
+**Scenario: Network Partition**
+- Keepalive detects connection loss within 30-60s (2x ping interval)
+- Client triggers automatic reconnection
+- Pending requests raise `RpcChannelClosedError`
+
+**Scenario: Slow Server (Slowloris Attack)**
+- 60-second message receive timeout protects client
+- Connection closed if message takes >60s to receive
+- Prevents resource exhaustion from slow-send attacks
+
+**Scenario: Memory Pressure**
+- Backpressure limits enforced (1000 pending requests default)
+- New requests rejected with `RpcBackpressureError` when limit reached
+- System self-protects against request flooding
+
+**5. Security Best Practices**
+
+- ✅ **Always use WSS** - Never use ws:// in production
+- ✅ **Validate certificates** - Automatically done in v1.0.0
+- ✅ **Set message size limits** - Protect against DoS (10MB default)
+- ✅ **Enable keepalive** - Detect dead connections quickly
+- ✅ **Implement timeouts** - Use `default_response_timeout` config
+- ✅ **Monitor error rates** - Track `RpcChannelClosedError`, `RpcBackpressureError`
+
+**6. Performance Tuning**
+
+```python
+# High-throughput configuration
+config = WebSocketRpcClientConfig(
+    backpressure=RpcBackpressureConfig(
+        max_pending_requests=2000,      # Allow more concurrent requests
+        max_send_queue_size=2000,       # Larger send buffer
+    ),
+    connection=RpcConnectionConfig(
+        default_response_timeout=10.0,  # Faster timeouts for low-latency
+    )
+)
+
+# Long-running operations configuration
+config = WebSocketRpcClientConfig(
+    connection=RpcConnectionConfig(
+        default_response_timeout=300.0,  # 5 minutes for slow operations
+        max_connection_duration=86400.0, # 24 hours max connection age
+    )
+)
+```
 
 ## Concepts
 - [RpcChannel](fastapi_ws_rpc/rpc_channel.py) - implements the RPC-protocol over the websocket
@@ -149,7 +279,7 @@ Websockets are ideal to create bi-directional realtime connections over the web.
 
 ## Logging
 fastapi-websocket-rpc provides a helper logging module to control how it produces logs for you.
-See [fastapi_websocket_rpc/logger.py](fastapi_ws_rpc/logger.py).
+See [fastapi_ws_rpc/logger.py](fastapi_ws_rpc/logger.py).
 Use ```logging_config.set_mode``` or the 'WS_RPC_LOGGING' environment variable to choose the logging method you prefer or override completely via default logging config.
 
 example:
@@ -161,5 +291,51 @@ from fastapi_ws_rpc.logger import logging_config, LoggingModes
 logging_config.set_mode(LoggingModes.UVICORN)
 ```
 
-## Pull requests - welcome!
+## Development
+
+### Contributing
+
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for:
+- Development setup instructions
+- Code style guidelines
+- Testing requirements
+- Pull request process
+
+### Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
+
+**Note**: Version 1.0.0 includes breaking changes:
+- **Class renamed**: `WebsocketRPCEndpoint` → `WebSocketRpcEndpoint` (note the capitalization)
+- **Minimum Python version**: Now requires Python 3.9+ (dropped 3.7 and 3.8)
+- **Exception hierarchy**: `RpcChannelClosedError` and `RemoteValueError` now inherit from `RpcError`
+- **Removed**: `requirements.txt` (use `pyproject.toml` for dependencies)
+- See [CHANGELOG.md](CHANGELOG.md) for complete migration details
+
+### Known Limitations
+
+#### JSON-RPC 2.0 Batch Requests
+
+Batch requests (arrays of request objects) are not currently supported in v1.0.0.
+This feature is planned for v1.1.0.
+
+**Workaround:** Send individual requests sequentially or use `asyncio.gather()` for concurrent execution.
+
+```python
+# Instead of batch request:
+# await channel.call_batch([...])
+
+# Use concurrent individual calls:
+results = await asyncio.gather(
+    channel.call("method1", {"a": 1}),
+    channel.call("method2", {"b": 2}),
+)
+```
+
+See [Issue #10](https://github.com/permitio/fastapi_websocket_rpc/issues) for implementation tracking.
+
+## Pull Requests Welcome! 🎉
+
 - Please include tests for new features
+- Follow the code style guidelines in [CONTRIBUTING.md](CONTRIBUTING.md)
+- Update documentation as needed

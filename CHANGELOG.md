@@ -1,0 +1,139 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- **JSON-RPC 2.0 positional parameters support**: Parameters can now be provided as arrays (positional format) in addition to objects (named format). Positional parameters are automatically mapped to method parameter names by position, providing full JSON-RPC 2.0 spec compliance.
+  - Updated `JsonRpcRequest.params` to accept `dict | list | None`
+  - Added parameter mapping logic in `RpcMethodInvoker.convert_params()`
+  - Comprehensive validation for parameter count mismatches and keyword-only parameters
+  - 8 new test cases covering edge cases (defaults, keyword-only params, error handling)
+- **Reconnection jitter**: Added 0-25% random jitter to reconnection delays to prevent thundering herd problem when multiple clients reconnect simultaneously after a server restart.
+- **Certificate expiry validation**: Client SSL context creation now validates certificate expiry dates before establishing connections. Rejects expired or not-yet-valid certificates with clear error messages.
+- **Slowloris protection documentation**: Added comprehensive documentation explaining how MESSAGE_RECEIVE_TIMEOUT protects against slow-send attacks and incomplete message attacks.
+
+### Fixed
+- **Promise cleanup memory leak**: Fixed critical memory leak where timed-out promises accumulated for up to 5 minutes before cleanup. Promises now cleaned up immediately on timeout, and DEFAULT_PROMISE_TTL reduced from 300s to 60s for faster cleanup in high-throughput scenarios.
+- **Request ID cooldown boundary bug**: Fixed off-by-one error in cooldown check (`>= cutoff_time` → `> cutoff_time`) that allowed IDs at exact boundary to linger indefinitely.
+- **Connection duration watchdog race condition**: Fixed race between watchdog timeout and external `close()` calls that could trigger duplicate `on_disconnect()` callbacks. Now uses `_close_lock` to ensure exactly-once semantics.
+- **Keepalive task cancellation deadlock**: Added 5-second timeout to `RpcKeepalive.stop()` to prevent deadlocks if keepalive task doesn't respond to cancellation. Logs warning if timeout occurs.
+- **WebSocket close code validation**: Client now correctly identifies non-retryable WebSocket close codes (1002, 1003, 1007, 1008, 1011) and permanently closes the connection instead of attempting reconnection. This prevents infinite reconnection loops when the server explicitly rejects the connection due to protocol errors or policy violations.
+- **Backpressure deadlock prevention**: Added 1-second timeout to semaphore acquisition in `send()` method to prevent indefinite blocking under high throughput. Now raises `RpcBackpressureError` with clear diagnostic message when send queue is full.
+- **Ping timeout configuration**: Fixed default `ping_timeout` (now 60s) to be greater than `ping_interval` (30s) in production defaults, preventing false timeout disconnections.
+- **Connection state reset timing**: State flags now reset after successful connection rather than before connection attempt, preventing incorrect state when reconnection fails.
+- **Reconnection state documentation**: Added clear documentation explaining why reconnection lock is released before reconnection attempts (to avoid blocking for minutes) and how the flag-based approach prevents concurrent reconnection.
+- **Logging performance**: Replaced f-strings with format strings in critical logging paths to avoid unnecessary string formatting when logs are disabled.
+
+### Breaking Changes
+- **Renamed class** - `WebsocketRPCEndpoint` → `WebSocketRpcEndpoint` for naming consistency with `WebSocketRpcClient`
+- **Exception hierarchy** - `RpcChannelClosedError` and `RemoteValueError` now inherit from `RpcError` base class instead of `Exception` and `ValueError` respectively
+- **Removed dead code** - Removed unused `messages` dict and `receive_text()` method from `JsonSerializingWebSocket`
+- **Removed legacy file** - Deleted `tests/requirements.txt` (dependencies managed in `pyproject.toml`)
+- **Dropped Python 3.7 and 3.8 support** - Minimum required version is now Python 3.9
+
+### Added
+- **JSON-RPC 2.0 compliance**:
+  - `JsonRpcErrorCode` enum with all standard error codes (PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR)
+  - Method validation with proper error code returns for protected methods, missing methods, and invalid parameters
+  - `notify()` method for fire-and-forget notifications (requests without id)
+  - Request ID collision detection in `async_call()` to prevent undefined behavior
+- **Production hardening features**:
+  - Message size limits (default 10MB) to prevent DoS attacks via large JSON payloads
+  - Rate limiting with max pending requests (default 1000) to prevent resource exhaustion
+  - Connection duration limits with graceful closure after max age
+  - Enhanced keepalive with consecutive failure detection (3 failures → auto-close)
+  - Connection state validation replacing assertions with `RpcInvalidStateError`
+- **New exceptions**:
+  - `RpcInvalidStateError` - For connection state validation
+  - `RpcMessageTooLargeError` - For message size limit violations
+  - `RpcBackpressureError` - For rate limit violations
+- **Internal architecture**:
+  - `_internal/` package with focused components (`RpcPromiseManager`, `RpcMethodInvoker`, `RpcProtocolHandler`, `RpcCaller`)
+  - Protocol-based architecture (`RpcCallable`, `MethodInvokable`) to break circular dependencies
+  - Dedicated `exceptions.py` module for all exception classes
+- **ConnectionManager enhancements**:
+  - `get_connection_count()` helper method for observability
+  - Comprehensive NumPy-style docstrings with usage examples
+- **Documentation**:
+  - NumPy-style docstrings for all public APIs with Parameters, Returns, Raises, Notes, Examples, and See Also sections
+  - ~590 lines of professional-grade documentation added to core classes
+  - Complete API reference documentation for all exported classes and methods
+- **Comprehensive type checking** with mypy in strict mode
+- pytest-cov for code coverage reporting with HTML and XML output
+- Ruff configuration with modern Python linting rules
+- Coverage configuration targeting fastapi_ws_rpc module
+- GitHub Actions now use Poetry for dependency management
+
+### Changed
+- **Architecture refactoring**:
+  - Decomposed `RpcChannel` from 717 → 430 lines (40% reduction)
+  - Extracted 4 specialized components for better separation of concerns
+  - Improved testability and maintainability with focused modules
+- **Exception handling**:
+  - Replaced 8 bare `except Exception` handlers with specific exception types throughout codebase
+  - Added comprehensive docstrings to all custom exceptions
+  - Improved error messages and logging context
+- **Async cleanup**:
+  - Made `cancel_tasks()`, `cancel_reader_task()`, and `_cancel_keep_alive_task()` properly async
+  - Tasks now await cancellation completion to prevent warnings
+- **Public API expansion**:
+  - Defined comprehensive public API in `__init__.py` with 18+ exports
+  - Added exports for previously internal but useful classes
+  - All imports backwards compatible (additions only, no removals)
+- **Dependencies updated**:
+  - FastAPI: 0.115.14 → 0.120.1
+  - uvicorn: ^0.34.1 → ^0.38.0
+  - packaging: ^24.2 → ^25.0
+  - Pydantic: 2.11.7 → 2.12.3
+  - Starlette: 0.46.2 → 0.49.1
+  - anyio: 4.9.0 → 4.11.0
+  - pytest: 8.4.1 → 8.4.2
+- **Pre-commit hooks updated**:
+  - pre-commit-hooks: v4.4.0 → v5.0.0
+  - ruff: v0.0.264 → v0.8.5
+  - black: 23.3.0 → 24.10.0
+  - isort: 5.12.0 → 5.13.2
+- **Modernized type hints**: Replaced deprecated typing constructs (`List` → `list`, `Dict` → `dict`, `Optional[X]` → `X | None`)
+- **Removed Python 2 legacy code**: Modernized class declarations (removed `object` inheritance)
+- GitHub Actions now tests Python 3.9, 3.10, 3.11, and 3.12 (previously tested 3.7-3.11)
+- README updated to reflect Python 3.9+ requirement
+
+### Fixed
+- **ConnectionManager race condition** - Added proper error handling for `ValueError` in `disconnect()` method
+- **Memory leaks** - Added cleanup for pending requests when channel closes
+- **Async task cancellation** - Properly await task cancellation to prevent un-awaited coroutine warnings
+- **JSON-RPC 2.0 compliance** - Added proper method validation and error codes
+- **Critical bug fix**: Replaced Python 2 `.encode("hex")` with Python 3 `.hex()` method in utils.py
+- Fixed integer division in `gen_token` to use `//` instead of `/` for Python 3 compatibility
+
+### Infrastructure
+- Added mypy type checking to development workflow
+- Configured ruff with comprehensive rule sets (pyupgrade, bugbear, comprehensions, etc.)
+- Set up coverage reporting with term-missing, HTML, and XML outputs
+- Updated GitHub Actions to use latest action versions (checkout@v4, setup-python@v5)
+
+### Known Limitations
+- **JSON-RPC 2.0 Batch Requests** - Batch requests (arrays of request objects) are not supported in v1.0.0. This feature is planned for v1.1.0. Workaround: Use `asyncio.gather()` for concurrent individual requests.
+
+## [0.2.0] - 2024-10-30
+
+### Changed
+- Added connection closed event for immediate reconnection detection
+- Updated FastAPI to ^0.120.0 for Starlette CVE-2025-62727 security fix
+
+### Fixed
+- Handle dictionaries in _serialize method for send_raw compatibility
+- Renamed ping method
+
+### Removed
+- Legacy RPC format removed, now uses JSON-RPC 2.0 only
+
+---
+
+[Unreleased]: https://github.com/permitio/fastapi_websocket_rpc/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/permitio/fastapi_websocket_rpc/releases/tag/v0.2.0

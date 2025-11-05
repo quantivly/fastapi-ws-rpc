@@ -8,12 +8,13 @@ import uvicorn
 from fastapi import FastAPI
 
 from fastapi_ws_rpc import WebSocketFrameType
+from fastapi_ws_rpc.config import RpcConnectionConfig, WebSocketRpcClientConfig
 from fastapi_ws_rpc.logger import LoggingModes, logging_config
 from fastapi_ws_rpc.rpc_methods import RpcUtilityMethods
 from fastapi_ws_rpc.simplewebsocket import SimpleWebSocket
 from fastapi_ws_rpc.utils import pydantic_serialize
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
-from fastapi_ws_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
+from fastapi_ws_rpc.websocket_rpc_endpoint import WebSocketRpcEndpoint
 
 # Set debug logs (and direct all logs to UVICORN format)
 logging_config.set_mode(LoggingModes.UVICORN, logging.DEBUG)
@@ -28,6 +29,9 @@ class BinarySerializingWebSocket(SimpleWebSocket):
         self._websocket = websocket
 
     def _serialize(self, msg):
+        # Handle both dict (from model_dump()) and BaseModel objects
+        if isinstance(msg, dict):
+            return json.dumps(msg).encode()
         return pydantic_serialize(msg).encode()
 
     def _deserialize(self, buffer):
@@ -47,7 +51,7 @@ class BinarySerializingWebSocket(SimpleWebSocket):
 
 def setup_server():
     app = FastAPI()
-    endpoint = WebsocketRPCEndpoint(
+    endpoint = WebSocketRpcEndpoint(
         RpcUtilityMethods(),
         frame_type=WebSocketFrameType.Binary,
         serializing_socket_cls=BinarySerializingWebSocket,
@@ -70,10 +74,13 @@ async def test_echo(server):
     """
     Test basic RPC with a simple echo
     """
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
     async with WebSocketRpcClient(
         uri,
         RpcUtilityMethods(),
-        default_response_timeout=4,
+        config=config,
         serializing_socket_cls=BinarySerializingWebSocket,
     ) as client:
         text = "Hello World!"
@@ -87,10 +94,13 @@ async def test_structured_response(server):
     Test RPC with structured (pydantic model) data response
     Using process details as example data
     """
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
     async with WebSocketRpcClient(
         uri,
         RpcUtilityMethods(),
-        default_response_timeout=4,
+        config=config,
         serializing_socket_cls=BinarySerializingWebSocket,
     ) as client:
         utils = RpcUtilityMethods()

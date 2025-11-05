@@ -2,6 +2,7 @@
 Test for the classic design pattern -
 where a client registers on the server to receive future events
 """
+
 import asyncio
 import os
 from multiprocessing import Process
@@ -10,10 +11,11 @@ import pytest
 import uvicorn
 from fastapi import APIRouter, FastAPI, WebSocket
 
+from fastapi_ws_rpc.config import RpcConnectionConfig, WebSocketRpcClientConfig
 from fastapi_ws_rpc.rpc_methods import RpcMethodsBase
 from fastapi_ws_rpc.utils import gen_uid
 from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
-from fastapi_ws_rpc.websocket_rpc_endpoint import WebsocketRPCEndpoint
+from fastapi_ws_rpc.websocket_rpc_endpoint import WebSocketRpcEndpoint
 
 # Configurable
 PORT = int(os.environ.get("PORT") or "9000")
@@ -40,7 +42,7 @@ def setup_server():
     app = FastAPI()
     router = APIRouter()
     # expose server methods
-    endpoint = WebsocketRPCEndpoint(ServerMethods())
+    endpoint = WebSocketRpcEndpoint(ServerMethods())
     # init the endpoint
 
     @router.websocket("/ws/{client_id}")
@@ -83,9 +85,10 @@ async def test_trigger_flow(server):
     test cascading async trigger flow from client to sever and back
     Request the server to call us back later
     """
-    async with WebSocketRpcClient(
-        uri, ClientMethods(), default_response_timeout=4
-    ) as client:
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
+    async with WebSocketRpcClient(uri, ClientMethods(), config=config) as client:
         time_delta = 0.5
         name = "Logan Nine Fingers"
         # Ask for a wake up call
@@ -111,8 +114,11 @@ async def test_on_connect_trigger(server):
         await channel.other.register_wake_up_call(time_delta=time_delta, name=name)
         # Wait for our wake-up call (or fail on timeout)
 
+    config = WebSocketRpcClientConfig(
+        connection=RpcConnectionConfig(default_response_timeout=4)
+    )
     async with WebSocketRpcClient(
-        uri, ClientMethods(), on_connect=[on_connect], default_response_timeout=4
+        uri, ClientMethods(), config=config, on_connect=[on_connect]
     ) as client:
         await asyncio.wait_for(client.methods.woke_up_event.wait(), 5)
         # Note: each channel has its own copy of the methods object
