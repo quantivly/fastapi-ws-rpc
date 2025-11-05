@@ -15,8 +15,6 @@ class RpcError(Exception):
     all library-specific errors.
     """
 
-    pass
-
 
 class RpcChannelClosedError(RpcError):
     """
@@ -27,8 +25,6 @@ class RpcChannelClosedError(RpcError):
     connection failure.
     """
 
-    pass
-
 
 class UnknownMethodError(RpcError):
     """
@@ -37,8 +33,6 @@ class UnknownMethodError(RpcError):
     This exception is raised when the remote side calls a method that
     is not registered in the local RpcMethodsBase instance.
     """
-
-    pass
 
 
 class RemoteValueError(RpcError):
@@ -49,8 +43,6 @@ class RemoteValueError(RpcError):
     to the caller, including cases where remote operations fail or return
     unexpected values.
     """
-
-    pass
 
 
 class RpcInvalidStateError(RpcError):
@@ -69,8 +61,6 @@ class RpcInvalidStateError(RpcError):
     - RPC channel not initialized
     """
 
-    pass
-
 
 class RpcMessageTooLargeError(RpcError):
     """
@@ -84,8 +74,6 @@ class RpcMessageTooLargeError(RpcError):
     This is a production hardening feature to ensure system stability
     under resource constraints or attack scenarios.
     """
-
-    pass
 
 
 class RpcBackpressureError(RpcError):
@@ -105,5 +93,3 @@ class RpcBackpressureError(RpcError):
     This is a production hardening feature to ensure system stability
     under high load or attack scenarios.
     """
-
-    pass

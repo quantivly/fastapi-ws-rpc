@@ -33,8 +33,6 @@ class NoResponse:
     ...     print("No response received")
     """
 
-    pass
-
 
 class RpcMethodsBase:
     """

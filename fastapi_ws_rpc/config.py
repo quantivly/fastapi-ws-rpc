@@ -45,7 +45,6 @@ class RpcDebugConfig:
         This method exists for consistency with other config classes.
         No validation needed for boolean field.
         """
-        pass
 
 
 @dataclass(frozen=True)
@@ -373,7 +372,6 @@ class RpcBackpressureConfig:
         __post_init__, so this is typically not needed.
         """
         # Validation is already done in __post_init__
-        pass
 
 
 @dataclass(frozen=True)
@@ -455,7 +453,6 @@ class RpcKeepaliveConfig:
         __post_init__, so this is typically not needed.
         """
         # Validation is already done in __post_init__
-        pass
 
 
 @dataclass(frozen=True)
@@ -546,7 +543,6 @@ class RpcRetryConfig:
         __post_init__, so this is typically not needed.
         """
         # Validation is already done in __post_init__
-        pass
 
 
 @dataclass(frozen=True)

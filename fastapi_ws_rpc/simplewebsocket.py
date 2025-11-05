@@ -121,7 +121,7 @@ class SimpleWebSocket(ABC):
         -----
         Implementations should handle serialization if needed.
         """
-        pass
+        ...
 
     @abstractmethod
     async def recv(self) -> Any:
@@ -138,7 +138,7 @@ class SimpleWebSocket(ABC):
         Implementations should handle deserialization if needed.
         This method should block until a message is available.
         """
-        pass
+        ...
 
     @abstractmethod
     async def close(self, code: int = 1000) -> None:
@@ -159,7 +159,7 @@ class SimpleWebSocket(ABC):
         -----
         After calling close(), no further send() or recv() calls should be made.
         """
-        pass
+        ...
 
 
 class JsonSerializingWebSocket(SimpleWebSocket):
