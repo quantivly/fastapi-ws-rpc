@@ -725,12 +725,19 @@ class RpcChannel:
                 f"({self._max_connection_duration}s). Closing gracefully."
             )
 
-            # Check if already closing to prevent race condition with external close() calls
-            if not self.is_closed() and not self._closing:
-                self._closing = True  # Set flag before triggering disconnect
-                # Trigger disconnect handlers
-                await self.on_disconnect()
-                # Close the channel
+            # Use lock to check flag and trigger disconnect exactly once
+            # Note: Don't call close() inside lock as it also acquires the lock (deadlock)
+            should_close = False
+            async with self._close_lock:
+                # Check if already closing to prevent race condition with external close() calls
+                if not self.is_closed() and not self._closing:
+                    self._closing = True  # Set flag before triggering disconnect
+                    should_close = True
+                    # Trigger disconnect handlers (inside lock to ensure exactly-once semantics)
+                    await self.on_disconnect()
+
+            # Call close() outside lock to avoid deadlock (close() also acquires the lock)
+            if should_close:
                 await self.close()
 
         except asyncio.CancelledError:

@@ -28,7 +28,8 @@ DEFAULT_MAX_PENDING_REQUESTS = 1000
 
 # Default TTL for promises (in seconds)
 # Promises older than this will be cleaned up to prevent memory leaks
-DEFAULT_PROMISE_TTL = 300.0  # 5 minutes
+# Reduced to 60s for faster cleanup in high-throughput scenarios
+DEFAULT_PROMISE_TTL = 60.0  # 1 minute
 
 # Cleanup interval for expired promises (in seconds)
 PROMISE_CLEANUP_INTERVAL = 60.0  # 1 minute
@@ -234,8 +235,9 @@ class RpcPromiseManager:
         # Cleanup old entries if we exceed max size to prevent unbounded growth
         if len(self._recently_used_ids) > MAX_RECENT_IDS:
             cutoff_time = current_time - REQUEST_ID_COOLDOWN
+            # Fix: Use > instead of >= to properly exclude boundary timestamps
             self._recently_used_ids = {
-                k: v for k, v in self._recently_used_ids.items() if v >= cutoff_time
+                k: v for k, v in self._recently_used_ids.items() if v > cutoff_time
             }
             logger.debug(
                 f"Cleaned up old recently-used IDs. "
@@ -351,6 +353,10 @@ class RpcPromiseManager:
 
         # Distinguish between timeout and channel closure
         if response is None:
+            # Clean up immediately to prevent memory leaks from timed-out promises
+            # Don't wait for periodic cleanup (which runs every 60s)
+            self.clear_saved_call(call_id)
+
             if self.is_closed():
                 # Channel was actually closed - connection lost
                 raise RpcChannelClosedError(

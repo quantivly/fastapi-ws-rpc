@@ -283,8 +283,8 @@ class TestPromiseWaitOperations:
         # Verify call ID is in error message
         assert "test-request-1" in str(exc_info.value)
 
-        # Promise should still be pending (not cleaned up on timeout)
-        assert promise_manager.get_pending_count() == 1
+        # Promise should be cleaned up immediately on timeout (prevents memory leaks)
+        assert promise_manager.get_pending_count() == 0
 
     @pytest.mark.asyncio
     async def test_wait_for_response_channel_closed(

@@ -157,6 +157,99 @@ client = WebSocketRpcClient(
 await channel.notify("log_event", {"level": "info", "message": "Processing..."})
 ```
 
+### Production Deployment Guide
+
+**1. Certificate Validation**
+
+The library now validates certificate expiry before establishing connections. Ensure your certificates are valid:
+
+```python
+# Client will automatically validate certificate expiry and reject expired certs
+ssl_context = tls_service.get_ssl_context()  # Validates cert is not expired
+client = WebSocketRpcClient(uri, methods, ssl=ssl_context)
+```
+
+**2. Connection Health Monitoring**
+
+Use protocol-level ping/pong (RFC 6455) for reliable health checking:
+
+```python
+from fastapi_ws_rpc import RpcKeepaliveConfig
+
+config = WebSocketRpcClientConfig(
+    keepalive=RpcKeepaliveConfig(
+        interval=30.0,              # Ping every 30 seconds
+        use_protocol_ping=True,     # Use WebSocket protocol ping (recommended)
+        max_failures=3,             # Close after 3 consecutive failures
+    ),
+    websocket_kwargs={
+        "ping_interval": 30,        # WebSocket library ping interval
+        "ping_timeout": 20,         # Pong response timeout
+    }
+)
+```
+
+**3. Memory Management**
+
+Promise cleanup has been optimized in v1.0.0:
+
+- **Immediate cleanup** - Timed-out promises cleaned up immediately (not after 60s)
+- **Reduced TTL** - Promise TTL reduced from 300s to 60s
+- **Automatic cleanup** - Periodic cleanup runs every 60s for edge cases
+
+**4. Failure Modes**
+
+**Scenario: Server Unavailable**
+- Client attempts reconnection with exponential backoff
+- Max 10 attempts with up to 60s delay between attempts
+- Jitter (0-25%) prevents thundering herd
+
+**Scenario: Network Partition**
+- Keepalive detects connection loss within 30-60s (2x ping interval)
+- Client triggers automatic reconnection
+- Pending requests raise `RpcChannelClosedError`
+
+**Scenario: Slow Server (Slowloris Attack)**
+- 60-second message receive timeout protects client
+- Connection closed if message takes >60s to receive
+- Prevents resource exhaustion from slow-send attacks
+
+**Scenario: Memory Pressure**
+- Backpressure limits enforced (1000 pending requests default)
+- New requests rejected with `RpcBackpressureError` when limit reached
+- System self-protects against request flooding
+
+**5. Security Best Practices**
+
+- ✅ **Always use WSS** - Never use ws:// in production
+- ✅ **Validate certificates** - Automatically done in v1.0.0
+- ✅ **Set message size limits** - Protect against DoS (10MB default)
+- ✅ **Enable keepalive** - Detect dead connections quickly
+- ✅ **Implement timeouts** - Use `default_response_timeout` config
+- ✅ **Monitor error rates** - Track `RpcChannelClosedError`, `RpcBackpressureError`
+
+**6. Performance Tuning**
+
+```python
+# High-throughput configuration
+config = WebSocketRpcClientConfig(
+    backpressure=RpcBackpressureConfig(
+        max_pending_requests=2000,      # Allow more concurrent requests
+        max_send_queue_size=2000,       # Larger send buffer
+    ),
+    connection=RpcConnectionConfig(
+        default_response_timeout=10.0,  # Faster timeouts for low-latency
+    )
+)
+
+# Long-running operations configuration
+config = WebSocketRpcClientConfig(
+    connection=RpcConnectionConfig(
+        default_response_timeout=300.0,  # 5 minutes for slow operations
+        max_connection_duration=86400.0, # 24 hours max connection age
+    )
+)
+```
 
 ## Concepts
 - [RpcChannel](fastapi_ws_rpc/rpc_channel.py) - implements the RPC-protocol over the websocket

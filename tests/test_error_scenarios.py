@@ -554,8 +554,10 @@ class TestConnectionTimeouts:
         # Verify call ID is in error message
         assert "timeout-req" in str(exc_info.value)
 
-        # Promise should still be pending
-        assert promise_manager.get_pending_count() == 1
+        # Promise should be cleaned up immediately on timeout (prevents memory leaks)
+        # Previous behavior: promise remained pending, causing 60s cleanup delay
+        # New behavior: immediate cleanup on timeout
+        assert promise_manager.get_pending_count() == 0
 
     @pytest.mark.asyncio
     async def test_multiple_timeouts_dont_leak_memory(
@@ -585,10 +587,13 @@ class TestConnectionTimeouts:
             with pytest.raises(asyncio.TimeoutError):
                 await promise_manager.wait_for_response(promise, timeout=0.05)
 
-        # All should still be pending (cleanup would happen via TTL)
-        assert promise_manager.get_pending_count() == 10
+        # All should be cleaned up immediately (prevents memory leaks)
+        # Previous behavior: promises remained pending for up to 60s (DEFAULT_PROMISE_TTL)
+        # New behavior: immediate cleanup on timeout for faster memory reclamation
+        assert promise_manager.get_pending_count() == 0
 
-        # Manual cleanup
+        # Manual cleanup no longer needed - already done automatically
+        # (Keeping for backward compatibility in case something breaks)
         for i in range(10):
             promise_manager.clear_saved_call(f"timeout-{i}")
 

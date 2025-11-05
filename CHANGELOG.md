@@ -14,13 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Comprehensive validation for parameter count mismatches and keyword-only parameters
   - 8 new test cases covering edge cases (defaults, keyword-only params, error handling)
 - **Reconnection jitter**: Added 0-25% random jitter to reconnection delays to prevent thundering herd problem when multiple clients reconnect simultaneously after a server restart.
+- **Certificate expiry validation**: Client SSL context creation now validates certificate expiry dates before establishing connections. Rejects expired or not-yet-valid certificates with clear error messages.
+- **Slowloris protection documentation**: Added comprehensive documentation explaining how MESSAGE_RECEIVE_TIMEOUT protects against slow-send attacks and incomplete message attacks.
 
 ### Fixed
+- **Promise cleanup memory leak**: Fixed critical memory leak where timed-out promises accumulated for up to 5 minutes before cleanup. Promises now cleaned up immediately on timeout, and DEFAULT_PROMISE_TTL reduced from 300s to 60s for faster cleanup in high-throughput scenarios.
+- **Request ID cooldown boundary bug**: Fixed off-by-one error in cooldown check (`>= cutoff_time` → `> cutoff_time`) that allowed IDs at exact boundary to linger indefinitely.
+- **Connection duration watchdog race condition**: Fixed race between watchdog timeout and external `close()` calls that could trigger duplicate `on_disconnect()` callbacks. Now uses `_close_lock` to ensure exactly-once semantics.
+- **Keepalive task cancellation deadlock**: Added 5-second timeout to `RpcKeepalive.stop()` to prevent deadlocks if keepalive task doesn't respond to cancellation. Logs warning if timeout occurs.
 - **WebSocket close code validation**: Client now correctly identifies non-retryable WebSocket close codes (1002, 1003, 1007, 1008, 1011) and permanently closes the connection instead of attempting reconnection. This prevents infinite reconnection loops when the server explicitly rejects the connection due to protocol errors or policy violations.
 - **Backpressure deadlock prevention**: Added 1-second timeout to semaphore acquisition in `send()` method to prevent indefinite blocking under high throughput. Now raises `RpcBackpressureError` with clear diagnostic message when send queue is full.
 - **Ping timeout configuration**: Fixed default `ping_timeout` (now 60s) to be greater than `ping_interval` (30s) in production defaults, preventing false timeout disconnections.
 - **Connection state reset timing**: State flags now reset after successful connection rather than before connection attempt, preventing incorrect state when reconnection fails.
-- **Reconnection race condition**: Added `_reconnect_lock` to make reconnection check-then-set atomic, preventing multiple concurrent reconnection attempts.
+- **Reconnection state documentation**: Added clear documentation explaining why reconnection lock is released before reconnection attempts (to avoid blocking for minutes) and how the flag-based approach prevents concurrent reconnection.
 - **Logging performance**: Replaced f-strings with format strings in critical logging paths to avoid unnecessary string formatting when logs are disabled.
 
 ### Breaking Changes

@@ -42,7 +42,15 @@ logger = get_logger(__name__)
 
 # Security: Maximum time to receive a complete WebSocket message
 # Protects against Slowloris-style attacks where malicious servers send
-# partial frames slowly to tie up client resources
+# partial frames slowly to tie up client resources.
+#
+# How it works:
+# - The websockets library buffers incoming frames and assembles them into messages
+# - recv() blocks until a complete message is received OR this timeout expires
+# - If server sends a 10MB message at 1KB/s (taking ~10,000s), timeout triggers after 60s
+# - This protects against both slow-send attacks and incomplete message attacks
+#
+# Note: This timeout applies to the entire message reception, not individual frames
 MESSAGE_RECEIVE_TIMEOUT = 60.0  # 1 minute max to receive complete message
 
 
@@ -257,7 +265,10 @@ class WebSocketRpcClient:
         If all reconnection attempts fail, the client will call close().
         """
         # Prevent concurrent reconnection attempts using a lock
-        # to make the check-then-set operation atomic
+        # to make the check-then-set operation atomic.
+        # Note: We only hold the lock for the flag check/set operation,
+        # not for the entire reconnection process (which could take minutes).
+        # This is intentional - holding the lock longer would block other operations.
         async with self._reconnect_lock:
             if self._is_reconnecting:
                 logger.debug(
@@ -266,6 +277,9 @@ class WebSocketRpcClient:
                 return
 
             self._is_reconnecting = True
+
+        # Reconnection logic runs outside lock to avoid blocking for minutes
+        # The _is_reconnecting flag prevents concurrent reconnection attempts
         try:
             for attempt in range(self.config.connection.max_reconnect_attempts):
                 # Calculate delay with exponential backoff, capped at 60 seconds

@@ -313,8 +313,8 @@ class TestTimeoutBehavior:
         # Error should include call ID
         assert "timeout-test" in str(exc_info.value)
 
-        # Request should still be pending (timeout doesn't auto-cleanup)
-        assert promise_manager.get_pending_count() == 1
+        # Request should be cleaned up immediately (prevents memory leaks)
+        assert promise_manager.get_pending_count() == 0
 
     @pytest.mark.asyncio
     async def test_multiple_concurrent_timeouts(
@@ -355,8 +355,8 @@ class TestTimeoutBehavior:
         # All should have timed out
         assert all(results), "Not all requests timed out"
 
-        # All should still be pending
-        assert promise_manager.get_pending_count() == num_requests
+        # All should be cleaned up immediately (prevents memory leaks)
+        assert promise_manager.get_pending_count() == 0
 
     @pytest.mark.asyncio
     async def test_timeout_vs_channel_close_distinction(

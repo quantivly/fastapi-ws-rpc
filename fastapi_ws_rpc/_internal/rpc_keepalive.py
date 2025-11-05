@@ -170,6 +170,7 @@ class RpcKeepalive:
         Stop the keepalive task and wait for it to complete.
 
         This method is idempotent and can be safely called multiple times.
+        Includes timeout protection to prevent deadlocks.
         """
         if self._task is None:
             logger.debug("No keepalive task to stop")
@@ -178,9 +179,17 @@ class RpcKeepalive:
         logger.debug("Stopping keepalive task...")
         self._task.cancel()
 
-        # Wait for cancellation to complete
-        with suppress(asyncio.CancelledError):
-            await self._task
+        # Wait for cancellation to complete with timeout to prevent deadlocks
+        # Use 5 second timeout as keepalive intervals are typically 30s
+        try:
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait_for(self._task, timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Keepalive task did not stop within 5s timeout. "
+                "This may indicate a deadlock or hung task."
+            )
+            # Task reference will be cleared anyway to prevent future issues
 
         self._task = None
         logger.debug("Keepalive task stopped successfully")
