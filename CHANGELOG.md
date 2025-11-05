@@ -13,11 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added parameter mapping logic in `RpcMethodInvoker.convert_params()`
   - Comprehensive validation for parameter count mismatches and keyword-only parameters
   - 8 new test cases covering edge cases (defaults, keyword-only params, error handling)
+- **Reconnection jitter**: Added 0-25% random jitter to reconnection delays to prevent thundering herd problem when multiple clients reconnect simultaneously after a server restart.
 
 ### Fixed
 - **WebSocket close code validation**: Client now correctly identifies non-retryable WebSocket close codes (1002, 1003, 1007, 1008, 1011) and permanently closes the connection instead of attempting reconnection. This prevents infinite reconnection loops when the server explicitly rejects the connection due to protocol errors or policy violations.
 - **Backpressure deadlock prevention**: Added 1-second timeout to semaphore acquisition in `send()` method to prevent indefinite blocking under high throughput. Now raises `RpcBackpressureError` with clear diagnostic message when send queue is full.
 - **Ping timeout configuration**: Fixed default `ping_timeout` (now 60s) to be greater than `ping_interval` (30s) in production defaults, preventing false timeout disconnections.
+- **Connection state reset timing**: State flags now reset after successful connection rather than before connection attempt, preventing incorrect state when reconnection fails.
+- **Reconnection race condition**: Added `_reconnect_lock` to make reconnection check-then-set atomic, preventing multiple concurrent reconnection attempts.
+- **Logging performance**: Replaced f-strings with format strings in critical logging paths to avoid unnecessary string formatting when logs are disabled.
 
 ### Breaking Changes
 - **Renamed class** - `WebsocketRPCEndpoint` → `WebSocketRpcEndpoint` for naming consistency with `WebSocketRpcClient`

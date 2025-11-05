@@ -6,6 +6,7 @@ via websocket and enables bi-directional RPC calls.
 from __future__ import annotations
 
 import asyncio
+import random
 from contextlib import suppress
 from typing import Any
 
@@ -143,6 +144,9 @@ class WebSocketRpcClient:
         self._connection_closed = asyncio.Event()
         self._closing = False  # Flag to make close() idempotent
         self._close_lock = asyncio.Lock()  # Lock to prevent race conditions in close()
+        self._reconnect_lock = (
+            asyncio.Lock()
+        )  # Lock to prevent reconnection race conditions
         self._close_code: int | None = None  # WebSocket close code
         self._close_reason: str | None = None  # WebSocket close reason
 
@@ -191,6 +195,7 @@ class WebSocketRpcClient:
         self._is_reconnecting = (
             False  # Flag to prevent concurrent reconnection attempts
         )
+        # Note: self._reconnect_lock is initialized at line 147 with other asyncio locks
 
     def _validate_connected(self) -> None:
         """Validate that the client is connected and operational.
@@ -251,37 +256,47 @@ class WebSocketRpcClient:
         No exceptions are raised - all errors are logged and handled internally.
         If all reconnection attempts fail, the client will call close().
         """
-        # Prevent concurrent reconnection attempts
-        if self._is_reconnecting:
-            logger.debug("Reconnection already in progress, skipping duplicate attempt")
-            return
+        # Prevent concurrent reconnection attempts using a lock
+        # to make the check-then-set operation atomic
+        async with self._reconnect_lock:
+            if self._is_reconnecting:
+                logger.debug(
+                    "Reconnection already in progress, skipping duplicate attempt"
+                )
+                return
 
-        self._is_reconnecting = True
+            self._is_reconnecting = True
         try:
             for attempt in range(self.config.connection.max_reconnect_attempts):
                 # Calculate delay with exponential backoff, capped at 60 seconds
-                delay = min(
-                    self.config.connection.reconnect_delay * (2**attempt),
-                    60.0,  # Maximum 60 seconds between attempts
-                )
+                base_delay = self.config.connection.reconnect_delay * (2**attempt)
+                capped_delay = min(base_delay, 60.0)  # Maximum 60 seconds
+
+                # Add 0-25% jitter to prevent thundering herd problem
+                # when multiple clients reconnect simultaneously
+                jitter = random.uniform(0, 0.25 * capped_delay)
+                delay = capped_delay + jitter
 
                 logger.info(
-                    f"Reconnecting in {delay:.1f}s "
-                    f"(attempt {attempt + 1}/{self.config.connection.max_reconnect_attempts})"
+                    "Reconnecting in %.1fs (attempt %d/%d)",
+                    delay,
+                    attempt + 1,
+                    self.config.connection.max_reconnect_attempts,
                 )
                 await asyncio.sleep(delay)
 
                 try:
-                    # Reset connection state before reconnecting
+                    # Attempt to reconnect first
+                    await self.__connect__()
+
+                    # Only reset connection state after successful connection
+                    # If connection fails, flags remain correct for retry
                     self._connection_closed.clear()
                     self._closing = False
 
-                    # Attempt to reconnect
-                    await self.__connect__()
-
                     # Reconnection successful
                     logger.info(
-                        f"Reconnection successful after {attempt + 1} attempt(s)"
+                        "Reconnection successful after %d attempt(s)", attempt + 1
                     )
                     self._reconnect_attempt = 0  # Reset attempt counter on success
                     return
@@ -296,7 +311,10 @@ class WebSocketRpcClient:
                 ) as e:
                     # Expected connection errors - log and retry
                     logger.warning(
-                        f"Reconnection attempt {attempt + 1} failed: {type(e).__name__}: {e}"
+                        "Reconnection attempt %d failed: %s: %s",
+                        attempt + 1,
+                        type(e).__name__,
+                        e,
                     )
                     self._reconnect_attempt = attempt + 1
 
@@ -601,7 +619,7 @@ class WebSocketRpcClient:
             For unexpected state errors.
         """
         try:
-            logger.info(f"Connecting to {self.uri}...")
+            logger.info("Connecting to %s...", self.uri)
 
             # Step 1: Create WebSocket connection with subprotocol negotiation
             connect_kwargs = self._prepare_connection_kwargs()
@@ -619,7 +637,7 @@ class WebSocketRpcClient:
             except (ValidationError, ValueError, TypeError) as e:
                 # RPC initialization failed (bad config, validation error, etc.)
                 # Clean up partial state to prevent resource leaks
-                logger.error(f"RPC initialization failed: {type(e).__name__}: {e}")
+                logger.error("RPC initialization failed: %s: %s", type(e).__name__, e)
                 await self._cleanup_partial_init()
                 raise
 
@@ -632,7 +650,9 @@ class WebSocketRpcClient:
             except Exception as e:
                 # Post-initialization failure (reader start failed, ping timeout, etc.)
                 # Must clean up ws, channel, and any started tasks
-                logger.error(f"Connection verification failed: {type(e).__name__}: {e}")
+                logger.error(
+                    "Connection verification failed: %s: %s", type(e).__name__, e
+                )
                 await self._cleanup_partial_init()
                 raise
 
@@ -648,7 +668,7 @@ class WebSocketRpcClient:
                 await self.channel.on_connect()
             except Exception as e:
                 # User callback raised an exception - log but connection succeeds
-                logger.error(f"Connect callback failed: {type(e).__name__}: {e}")
+                logger.error("Connect callback failed: %s: %s", type(e).__name__, e)
                 # Uncomment to enforce strict callback handling:
                 # raise
 
@@ -902,8 +922,9 @@ class WebSocketRpcClient:
             # Log with close code and reason for better debugging
             if self._close_code is not None:
                 logger.info(
-                    f"Connection was terminated. Close code: {self._close_code}, "
-                    f"reason: {self._close_reason or '(no reason provided)'}"
+                    "Connection was terminated. Close code: %d, reason: %s",
+                    self._close_code,
+                    self._close_reason or "(no reason provided)",
                 )
             else:
                 logger.info("Connection was terminated.")
@@ -924,9 +945,11 @@ class WebSocketRpcClient:
             # Check if close code indicates a permanent failure
             if self._close_code in non_retryable_codes:
                 logger.error(
-                    f"Connection closed with non-retryable code {self._close_code}: {self._close_reason}. "
+                    "Connection closed with non-retryable code %d: %s. "
                     "This indicates a permanent failure (protocol error, policy violation, etc.). "
-                    "Will NOT attempt reconnection."
+                    "Will NOT attempt reconnection.",
+                    self._close_code,
+                    self._close_reason,
                 )
                 # Close permanently - server explicitly rejected connection
                 asyncio.create_task(self.close())
