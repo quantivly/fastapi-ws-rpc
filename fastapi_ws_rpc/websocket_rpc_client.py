@@ -53,6 +53,19 @@ logger = get_logger(__name__)
 # Note: This timeout applies to the entire message reception, not individual frames
 MESSAGE_RECEIVE_TIMEOUT = 60.0  # 1 minute max to receive complete message
 
+# WebSocket close codes (RFC 6455 Section 7.4 and IANA WebSocket Close Code Registry)
+# See: https://www.rfc-editor.org/rfc/rfc6455.html#section-7.4
+# See: https://www.iana.org/assignments/websocket/websocket.xml
+WS_CLOSE_CODE_NORMAL = 1000  # Normal closure
+WS_CLOSE_CODE_GOING_AWAY = 1001  # Server shutting down or browser navigating
+WS_CLOSE_CODE_PROTOCOL_ERROR = 1002  # Protocol/implementation violation
+WS_CLOSE_CODE_UNSUPPORTED_DATA = 1003  # Data type not acceptable
+WS_CLOSE_CODE_ABNORMAL_CLOSURE = 1006  # No close frame received (network failure)
+WS_CLOSE_CODE_INVALID_DATA = 1007  # Inconsistent/malformed data
+WS_CLOSE_CODE_POLICY_VIOLATION = 1008  # Generic policy violation
+WS_CLOSE_CODE_INTERNAL_ERROR = 1011  # Unexpected server condition
+WS_CLOSE_CODE_SERVICE_RESTART = 1012  # Server restarting (reconnection encouraged)
+
 
 class WebSocketRpcClient:
     """
@@ -307,6 +320,8 @@ class WebSocketRpcClient:
                     # If connection fails, flags remain correct for retry
                     self._connection_closed.clear()
                     self._closing = False
+                    self._close_code = None  # Reset close diagnostics
+                    self._close_reason = None
 
                     # Reconnection successful
                     logger.info(
@@ -853,12 +868,16 @@ class WebSocketRpcClient:
 
         Notes
         -----
-        Implements two layers of timeout protection:
+        Implements two layers of timeout protection (both optional):
 
-        1. MESSAGE_RECEIVE_TIMEOUT: Prevents Slowloris-style attacks where
-           malicious servers send partial frames slowly
-        2. idle_timeout: Detects stale connections where server crashes
-           without sending proper TCP FIN/RST
+        1. message_receive_timeout (config): Prevents Slowloris-style attacks where
+           malicious servers send partial frames slowly. Default is None (disabled).
+        2. idle_timeout (config): Detects stale connections where server crashes
+           without sending proper TCP FIN/RST. Default is None (no idle detection).
+
+        If both timeouts are configured, uses the minimum value for efficiency.
+        If neither is configured, waits indefinitely for messages (relies on
+        WebSocket protocol-level ping/pong for health checking).
         """
         # Validate connection state before starting reader loop
         self._validate_connected()
@@ -879,12 +898,26 @@ class WebSocketRpcClient:
             # Main reader loop - continuously read and process messages
             while True:
                 try:
-                    # Add timeout wrapper to prevent Slowloris attacks
-                    # Slowloris: malicious server sends partial WebSocket frames slowly
-                    # to tie up client resources without completing messages
-                    raw_message = await asyncio.wait_for(
-                        self.ws.recv(), timeout=MESSAGE_RECEIVE_TIMEOUT
-                    )
+                    # Calculate effective timeout based on configuration
+                    # Use the minimum of message_receive_timeout and idle_timeout
+                    # If both are None, wait indefinitely
+                    msg_timeout = self.config.connection.message_receive_timeout
+                    idle_timeout = self.config.connection.idle_timeout
+
+                    timeouts = [t for t in [msg_timeout, idle_timeout] if t is not None]
+                    effective_timeout = min(timeouts) if timeouts else None
+
+                    if effective_timeout is not None:
+                        # Add timeout wrapper to prevent Slowloris attacks and detect idle connections
+                        # Slowloris: malicious server sends partial WebSocket frames slowly
+                        # to tie up client resources without completing messages
+                        raw_message = await asyncio.wait_for(
+                            self.ws.recv(), timeout=effective_timeout
+                        )
+                    else:
+                        # No timeout configured - wait indefinitely
+                        raw_message = await self.ws.recv()
+
                     logger.debug("Received message via reader")
                     last_message_time = time.monotonic()  # Update activity timestamp
                     await self.channel.on_message(raw_message)
@@ -905,13 +938,16 @@ class WebSocketRpcClient:
                             f"Connection idle timeout ({self.config.connection.idle_timeout}s). "
                             f"No messages received for {elapsed:.1f}s. Closing stale connection."
                         )
-                    else:
+                    elif self.config.connection.message_receive_timeout is not None:
                         # Message receive timeout: took too long to receive a single message
                         # This is a Slowloris-style attack or severe network degradation
                         logger.error(
-                            f"Message receive timeout ({MESSAGE_RECEIVE_TIMEOUT}s). "
+                            f"Message receive timeout ({self.config.connection.message_receive_timeout}s). "
                             f"Possible slow-read attack or network issue."
                         )
+                    else:
+                        # Unexpected timeout (shouldn't happen if effective_timeout was None)
+                        logger.error("Unexpected timeout during message receive.")
 
                     # Either way, close the connection
                     asyncio.create_task(self.close())
@@ -935,11 +971,21 @@ class WebSocketRpcClient:
 
             # Log with close code and reason for better debugging
             if self._close_code is not None:
-                logger.info(
-                    "Connection was terminated. Close code: %d, reason: %s",
-                    self._close_code,
-                    self._close_reason or "(no reason provided)",
-                )
+                # Special handling for code 1012 (Service Restart)
+                # This is an expected, recoverable condition during server maintenance
+                if self._close_code == WS_CLOSE_CODE_SERVICE_RESTART:
+                    logger.info(
+                        "Server restart detected (close code %d: %s). "
+                        "This is a normal operational event. Reconnection recommended.",
+                        WS_CLOSE_CODE_SERVICE_RESTART,
+                        self._close_reason or "Service Restart",
+                    )
+                else:
+                    logger.info(
+                        "Connection was terminated. Close code: %d, reason: %s",
+                        self._close_code,
+                        self._close_reason or "(no reason provided)",
+                    )
             else:
                 logger.info("Connection was terminated.")
 
@@ -948,12 +994,18 @@ class WebSocketRpcClient:
 
             # WebSocket close codes that indicate permanent failures (DO NOT reconnect)
             # See RFC 6455 Section 7.4: https://www.rfc-editor.org/rfc/rfc6455.html#section-7.4
+            #
+            # Retryable codes (not in this set) include:
+            # - 1000: Normal closure (client/server intentional close)
+            # - 1001: Going away (server shutting down, page navigating away)
+            # - 1006: Abnormal closure (network failure, no close frame received)
+            # - 1012: Service Restart (server restarting, reconnection encouraged)
             non_retryable_codes = {
-                1002,  # Protocol Error - implementation/protocol violation
-                1003,  # Unsupported Data - data type not acceptable
-                1007,  # Invalid frame payload data - inconsistent/malformed data
-                1008,  # Policy Violation - generic policy violation
-                1011,  # Internal Error - unexpected server condition
+                WS_CLOSE_CODE_PROTOCOL_ERROR,  # Protocol Error - implementation/protocol violation
+                WS_CLOSE_CODE_UNSUPPORTED_DATA,  # Unsupported Data - data type not acceptable
+                WS_CLOSE_CODE_INVALID_DATA,  # Invalid frame payload data - inconsistent/malformed data
+                WS_CLOSE_CODE_POLICY_VIOLATION,  # Policy Violation - generic policy violation
+                WS_CLOSE_CODE_INTERNAL_ERROR,  # Internal Error - unexpected server condition
             }
 
             # Check if close code indicates a permanent failure
@@ -1180,6 +1232,7 @@ class WebSocketRpcClient:
             - 1002: Protocol error
             - 1003: Unsupported data
             - 1006: Abnormal closure (no close frame received)
+            - 1012: Service restart (server restarting, reconnection recommended)
         """
         return self._close_code
 
