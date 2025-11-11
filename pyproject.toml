@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "fastapi_ws_rpc"
-version = "0.2.0"
+version = "1.1.0"
 description = "A fast and durable bidirectional JSON RPC channel over Websockets and FastApi."
 readme = "README.md"
 license = "MIT"
