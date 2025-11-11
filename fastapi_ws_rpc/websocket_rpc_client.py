@@ -935,11 +935,20 @@ class WebSocketRpcClient:
 
             # Log with close code and reason for better debugging
             if self._close_code is not None:
-                logger.info(
-                    "Connection was terminated. Close code: %d, reason: %s",
-                    self._close_code,
-                    self._close_reason or "(no reason provided)",
-                )
+                # Special handling for code 1012 (Service Restart)
+                # This is an expected, recoverable condition during server maintenance
+                if self._close_code == 1012:
+                    logger.info(
+                        "Server restart detected (close code 1012: %s). "
+                        "This is a normal operational event. Reconnection recommended.",
+                        self._close_reason or "Service Restart",
+                    )
+                else:
+                    logger.info(
+                        "Connection was terminated. Close code: %d, reason: %s",
+                        self._close_code,
+                        self._close_reason or "(no reason provided)",
+                    )
             else:
                 logger.info("Connection was terminated.")
 
@@ -948,6 +957,12 @@ class WebSocketRpcClient:
 
             # WebSocket close codes that indicate permanent failures (DO NOT reconnect)
             # See RFC 6455 Section 7.4: https://www.rfc-editor.org/rfc/rfc6455.html#section-7.4
+            #
+            # Retryable codes (not in this set) include:
+            # - 1000: Normal closure (client/server intentional close)
+            # - 1001: Going away (server shutting down, page navigating away)
+            # - 1006: Abnormal closure (network failure, no close frame received)
+            # - 1012: Service Restart (server restarting, reconnection encouraged)
             non_retryable_codes = {
                 1002,  # Protocol Error - implementation/protocol violation
                 1003,  # Unsupported Data - data type not acceptable
@@ -1180,6 +1195,7 @@ class WebSocketRpcClient:
             - 1002: Protocol error
             - 1003: Unsupported data
             - 1006: Abnormal closure (no close frame received)
+            - 1012: Service restart (server restarting, reconnection recommended)
         """
         return self._close_code
 
