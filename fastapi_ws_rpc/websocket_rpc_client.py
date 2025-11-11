@@ -537,7 +537,9 @@ class WebSocketRpcClient:
         # Some serializers (e.g., BinarySerializingWebSocket) don't support this parameter
         if self._max_message_size is not None:
             try:
-                self.ws = self._serializing_socket_cls(raw_ws, max_message_size=self._max_message_size)  # type: ignore[call-arg]
+                self.ws = self._serializing_socket_cls(
+                    raw_ws, max_message_size=self._max_message_size
+                )  # type: ignore[call-arg]
             except TypeError as e:
                 # Serializer doesn't support max_message_size parameter
                 if "max_message_size" in str(e):
@@ -694,6 +696,7 @@ class WebSocketRpcClient:
             # This prevents buggy user code from breaking the connection lifecycle.
             # If you need strict callback handling, uncomment the raise below.
             try:
+                assert self.channel is not None  # Guaranteed by successful init above
                 await self.channel.on_connect()
             except Exception as e:
                 # User callback raised an exception - log but connection succeeds

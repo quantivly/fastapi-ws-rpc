@@ -500,8 +500,8 @@ class TestLongRunningConnections:
             print("\nStability test results:")
             print(f"  Duration: {elapsed:.1f}s")
             print(f"  Messages: {message_count}")
-            print(f"  Avg response time: {avg_response_time*1000:.2f}ms")
-            print(f"  Max response time: {max_response_time*1000:.2f}ms")
+            print(f"  Avg response time: {avg_response_time * 1000:.2f}ms")
+            print(f"  Max response time: {max_response_time * 1000:.2f}ms")
 
             # Response times should remain reasonable
             assert (
@@ -713,7 +713,7 @@ class TestHighThroughput:
         # Performance metrics
         throughput_mbps = (total_bytes / elapsed) / (1024 * 1024)
         print(f"\nData throughput: {throughput_mbps:.2f} MB/s")
-        print(f"Request rate: {num_requests/elapsed:.0f} requests/second")
+        print(f"Request rate: {num_requests / elapsed:.0f} requests/second")
 
 
 # ============================================================================

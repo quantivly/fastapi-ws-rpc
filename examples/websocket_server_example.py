@@ -18,7 +18,9 @@ endpoint = WebSocketRpcEndpoint(RpcUtilityMethods())
 
 @router.websocket("/ws/{client_id}")
 async def websocket_rpc_endpoint(
-    websocket: WebSocket, client_id: str, token=Depends(get_token_header)
+    websocket: WebSocket,
+    client_id: str,
+    token=Depends(get_token_header),  # noqa: B008
 ):
     # can add more startup code here
     await endpoint.main_loop(websocket)

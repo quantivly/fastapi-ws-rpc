@@ -13,9 +13,9 @@ from fastapi_ws_rpc.websocket_rpc_client import WebSocketRpcClient
 from fastapi_ws_rpc.websocket_rpc_endpoint import WebSocketRpcEndpoint
 
 # Add parent path to use local src as package for tests
-sys.path.append(
-    os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir))
-)
+# fmt: off
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir)))  # noqa: PTH100, PTH118, PTH120
+# fmt: on
 
 
 # Configurable
