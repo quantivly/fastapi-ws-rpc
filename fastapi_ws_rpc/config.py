@@ -162,6 +162,12 @@ class RpcConnectionConfig:
         Time in seconds of inactivity after which the connection is considered
         idle and should be closed. If None, idle connections stay open.
         Replaces the old receive_timeout concept.
+    message_receive_timeout : float | None, default None
+        Maximum time in seconds to receive a complete WebSocket message.
+        Originally designed for Slowloris attack protection (hardcoded at 60s).
+        If None (default), no timeout is enforced on message reception.
+        Use idle_timeout for general connection health monitoring instead.
+        Only set this explicitly if you need protection against slow-read attacks.
     auto_reconnect : bool, default False
         Enable automatic reconnection when the connection is lost. When True,
         the client will attempt to reconnect with exponential backoff up to
@@ -218,6 +224,7 @@ class RpcConnectionConfig:
     default_response_timeout: float | None = None
     max_connection_duration: float | None = None
     idle_timeout: float | None = None
+    message_receive_timeout: float | None = None
     auto_reconnect: bool = False
     reconnect_delay: float = 5.0
     max_reconnect_attempts: int = 10

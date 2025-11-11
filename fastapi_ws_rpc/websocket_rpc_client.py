@@ -853,12 +853,16 @@ class WebSocketRpcClient:
 
         Notes
         -----
-        Implements two layers of timeout protection:
+        Implements two layers of timeout protection (both optional):
 
-        1. MESSAGE_RECEIVE_TIMEOUT: Prevents Slowloris-style attacks where
-           malicious servers send partial frames slowly
-        2. idle_timeout: Detects stale connections where server crashes
-           without sending proper TCP FIN/RST
+        1. message_receive_timeout (config): Prevents Slowloris-style attacks where
+           malicious servers send partial frames slowly. Default is None (disabled).
+        2. idle_timeout (config): Detects stale connections where server crashes
+           without sending proper TCP FIN/RST. Default is None (no idle detection).
+
+        If both timeouts are configured, uses the minimum value for efficiency.
+        If neither is configured, waits indefinitely for messages (relies on
+        WebSocket protocol-level ping/pong for health checking).
         """
         # Validate connection state before starting reader loop
         self._validate_connected()
@@ -879,12 +883,26 @@ class WebSocketRpcClient:
             # Main reader loop - continuously read and process messages
             while True:
                 try:
-                    # Add timeout wrapper to prevent Slowloris attacks
-                    # Slowloris: malicious server sends partial WebSocket frames slowly
-                    # to tie up client resources without completing messages
-                    raw_message = await asyncio.wait_for(
-                        self.ws.recv(), timeout=MESSAGE_RECEIVE_TIMEOUT
-                    )
+                    # Calculate effective timeout based on configuration
+                    # Use the minimum of message_receive_timeout and idle_timeout
+                    # If both are None, wait indefinitely
+                    msg_timeout = self.config.connection.message_receive_timeout
+                    idle_timeout = self.config.connection.idle_timeout
+
+                    timeouts = [t for t in [msg_timeout, idle_timeout] if t is not None]
+                    effective_timeout = min(timeouts) if timeouts else None
+
+                    if effective_timeout is not None:
+                        # Add timeout wrapper to prevent Slowloris attacks and detect idle connections
+                        # Slowloris: malicious server sends partial WebSocket frames slowly
+                        # to tie up client resources without completing messages
+                        raw_message = await asyncio.wait_for(
+                            self.ws.recv(), timeout=effective_timeout
+                        )
+                    else:
+                        # No timeout configured - wait indefinitely
+                        raw_message = await self.ws.recv()
+
                     logger.debug("Received message via reader")
                     last_message_time = time.monotonic()  # Update activity timestamp
                     await self.channel.on_message(raw_message)
@@ -905,13 +923,16 @@ class WebSocketRpcClient:
                             f"Connection idle timeout ({self.config.connection.idle_timeout}s). "
                             f"No messages received for {elapsed:.1f}s. Closing stale connection."
                         )
-                    else:
+                    elif self.config.connection.message_receive_timeout is not None:
                         # Message receive timeout: took too long to receive a single message
                         # This is a Slowloris-style attack or severe network degradation
                         logger.error(
-                            f"Message receive timeout ({MESSAGE_RECEIVE_TIMEOUT}s). "
+                            f"Message receive timeout ({self.config.connection.message_receive_timeout}s). "
                             f"Possible slow-read attack or network issue."
                         )
+                    else:
+                        # Unexpected timeout (shouldn't happen if effective_timeout was None)
+                        logger.error("Unexpected timeout during message receive.")
 
                     # Either way, close the connection
                     asyncio.create_task(self.close())
