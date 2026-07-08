@@ -120,6 +120,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Known Limitations
 - **JSON-RPC 2.0 Batch Requests** - Batch requests (arrays of request objects) are not supported in v1.0.0. This feature is planned for v1.1.0. Workaround: Use `asyncio.gather()` for concurrent individual requests.
 
+## [1.2.0] - 2026-07-08
+
+### Changed
+- Loosened the FastAPI constraint from `^0.120.0` to `>=0.135.0,<1.0.0`. FastAPI first
+  allowed Starlette 1.x at 0.135.0 (`starlette>=0.46.0`), so this unblocks consumers from
+  resolving Starlette 1.3.1, which fixes CVE-2026-48818 (SSRF/NTLM credential theft via UNC),
+  CVE-2026-54283, CVE-2026-48817, and related advisories. Verified against fastapi 0.139.0 +
+  starlette 1.3.1 (full test suite passes).
+
+### Breaking Changes
+- **Dropped Python 3.9 support** — minimum is now Python 3.10, as required by FastAPI ≥0.135
+  and Starlette 1.x.
+
 ## [0.2.0] - 2024-10-30
 
 ### Changed
