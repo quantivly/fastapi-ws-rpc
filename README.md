@@ -251,6 +251,31 @@ config = WebSocketRpcClientConfig(
 )
 ```
 
+## Reporting a safe error
+
+In production mode (the default) any exception a method raises reaches the caller as a
+generic `-32603 Internal server error` with no `data`, so nothing the exception carries
+leaks. When the caller needs to know *which kind* of failure happened, raise
+`RpcApplicationError` with a code, message and `data` you wrote yourself. They are sent
+unchanged in every mode, and the exception's cause is never sent:
+
+```python
+from fastapi_ws_rpc import RpcApplicationError, RpcMethodsBase
+
+
+class MyMethods(RpcMethodsBase):
+    async def fetch_report(self, report_id: str) -> dict:
+        try:
+            return await load_report(report_id)
+        except TimeoutError as error:
+            raise RpcApplicationError(
+                -32001, "Procedure failed", {"kind": "timed_out"}
+            ) from error
+```
+
+Use a code in `-32099..-32000` or outside `-32768..-32000`; codes JSON-RPC 2.0 reserves for
+its own errors raise `ValueError`. Put nothing in `message` or `data` the caller must not see.
+
 ## Concepts
 - [RpcChannel](fastapi_ws_rpc/rpc_channel.py) - implements the RPC-protocol over the websocket
     - Sending RpcRequests per method call
