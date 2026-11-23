@@ -25,6 +25,7 @@ from fastapi_ws_rpc.connection_manager import ConnectionManager
 # Exceptions
 from fastapi_ws_rpc.exceptions import (
     RemoteValueError,
+    RpcApplicationError,
     RpcBackpressureError,
     RpcChannelClosedError,
     RpcError,
@@ -80,6 +81,7 @@ __all__ = [
     "OnDisconnectCallback",
     "OnErrorCallback",
     "RemoteValueError",
+    "RpcApplicationError",
     # Configuration classes (v1.0.0+)
     "RpcBackpressureConfig",
     "RpcBackpressureError",

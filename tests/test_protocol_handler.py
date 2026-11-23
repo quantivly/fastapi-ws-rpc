@@ -13,6 +13,7 @@ This test module covers:
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -21,6 +22,8 @@ import pytest_asyncio
 from fastapi_ws_rpc._internal.method_invoker import RpcMethodInvoker
 from fastapi_ws_rpc._internal.promise_manager import RpcPromiseManager
 from fastapi_ws_rpc._internal.protocol_handler import RpcProtocolHandler
+from fastapi_ws_rpc.config import RpcDebugConfig
+from fastapi_ws_rpc.exceptions import RpcApplicationError
 from fastapi_ws_rpc.rpc_methods import NoResponse, RpcMethodsBase
 from fastapi_ws_rpc.schemas import (
     JsonRpcError,
@@ -28,6 +31,13 @@ from fastapi_ws_rpc.schemas import (
     JsonRpcRequest,
     JsonRpcResponse,
 )
+
+# A failure a method reports about itself: a code in the implementation-defined
+# server-error range, a fixed message, and data the method chose to share.
+APPLICATION_ERROR_CODE = -32001
+APPLICATION_ERROR_MESSAGE = "Procedure failed"
+APPLICATION_ERROR_DATA = {"kind": "timed_out"}
+SECRET_CAUSE_TEXT = "secret-host:9200 password=hunter2"
 
 # ============================================================================
 # Test Methods Classes
@@ -61,6 +71,23 @@ class ProtocolTestMethods(RpcMethodsBase):
     async def method_returning_noresponse(self) -> type[NoResponse]:
         """Method that returns NoResponse."""
         return NoResponse
+
+    async def method_with_application_error(self) -> None:
+        """Method that reports a failure it wrote itself."""
+        raise RpcApplicationError(
+            APPLICATION_ERROR_CODE, APPLICATION_ERROR_MESSAGE, APPLICATION_ERROR_DATA
+        )
+
+    async def method_with_chained_application_error(self) -> None:
+        """Method that reports a failure caused by an exception with secrets."""
+        try:
+            raise RuntimeError(SECRET_CAUSE_TEXT)
+        except RuntimeError as cause:
+            raise RpcApplicationError(
+                APPLICATION_ERROR_CODE,
+                APPLICATION_ERROR_MESSAGE,
+                APPLICATION_ERROR_DATA,
+            ) from cause
 
 
 # ============================================================================
@@ -973,3 +1000,106 @@ class TestIntegration:
         second_response = mock_send.call_args_list[1][0][0]
         assert second_response["id"] == "req-2"
         assert second_response["result"] == "test"
+
+
+# ============================================================================
+# Application Error Tests
+# ============================================================================
+
+
+@pytest.fixture
+def debug_protocol_handler(
+    method_invoker: RpcMethodInvoker,
+    promise_manager: RpcPromiseManager,
+    mock_send: AsyncMock,
+) -> RpcProtocolHandler:
+    """Create a protocol handler in debug mode (full error disclosure)."""
+    return RpcProtocolHandler(
+        method_invoker,
+        promise_manager,
+        mock_send,
+        debug_config=RpcDebugConfig(debug_mode=True),
+    )
+
+
+def _sent_error(mock_send: AsyncMock) -> dict:
+    """Return the single error object the handler sent."""
+    mock_send.assert_called_once()
+    return mock_send.call_args[0][0]["error"]
+
+
+class TestApplicationError:
+    """A method's own RpcApplicationError goes out exactly as written."""
+
+    EXPECTED_ERROR = {
+        "code": APPLICATION_ERROR_CODE,
+        "message": APPLICATION_ERROR_MESSAGE,
+        "data": APPLICATION_ERROR_DATA,
+    }
+
+    @pytest.mark.asyncio
+    async def test_application_error_is_sent_unchanged_in_production_mode(
+        self, protocol_handler: RpcProtocolHandler, mock_send: AsyncMock
+    ) -> None:
+        request = JsonRpcRequest(
+            jsonrpc="2.0", id="app-1", method="method_with_application_error"
+        )
+
+        await protocol_handler.handle_request(request)
+
+        assert _sent_error(mock_send) == self.EXPECTED_ERROR
+
+    @pytest.mark.asyncio
+    async def test_application_error_is_sent_unchanged_in_debug_mode(
+        self, debug_protocol_handler: RpcProtocolHandler, mock_send: AsyncMock
+    ) -> None:
+        request = JsonRpcRequest(
+            jsonrpc="2.0", id="app-2", method="method_with_application_error"
+        )
+
+        await debug_protocol_handler.handle_request(request)
+
+        assert _sent_error(mock_send) == self.EXPECTED_ERROR
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("is_debug_mode", [False, True])
+    async def test_application_error_cause_never_reaches_the_wire(
+        self,
+        is_debug_mode: bool,
+        protocol_handler: RpcProtocolHandler,
+        debug_protocol_handler: RpcProtocolHandler,
+        mock_send: AsyncMock,
+    ) -> None:
+        handler = debug_protocol_handler if is_debug_mode else protocol_handler
+        request = JsonRpcRequest(
+            jsonrpc="2.0", id="app-3", method="method_with_chained_application_error"
+        )
+
+        await handler.handle_request(request)
+
+        sent_message = mock_send.call_args[0][0]
+        assert sent_message["error"] == self.EXPECTED_ERROR
+        assert "secret-host" not in json.dumps(sent_message)
+
+    @pytest.mark.parametrize("reserved_code", [-32603, -32700, -32100, -32768])
+    def test_application_error_rejects_reserved_codes(self, reserved_code: int) -> None:
+        with pytest.raises(ValueError):
+            RpcApplicationError(reserved_code, APPLICATION_ERROR_MESSAGE)
+
+    @pytest.mark.parametrize("allowed_code", [-32001, -32099, -32000, -32769, 1])
+    def test_application_error_accepts_application_codes(
+        self, allowed_code: int
+    ) -> None:
+        error = RpcApplicationError(allowed_code, APPLICATION_ERROR_MESSAGE, {"k": 1})
+
+        assert (error.code, error.message, error.data) == (
+            allowed_code,
+            APPLICATION_ERROR_MESSAGE,
+            {"k": 1},
+        )
+        assert str(error) == APPLICATION_ERROR_MESSAGE
+
+    def test_application_error_is_exported_from_the_package(self) -> None:
+        import fastapi_ws_rpc
+
+        assert fastapi_ws_rpc.RpcApplicationError is RpcApplicationError
