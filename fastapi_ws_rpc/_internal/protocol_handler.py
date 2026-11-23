@@ -225,10 +225,17 @@ class RpcProtocolHandler:
                 },
             )
             if request.id is not None:
+                # The TypeError may come from inside the method, carrying
+                # whatever the method was handling, so production mode sends
+                # no exception text (debug mode keeps it).
+                if self._debug_config.debug_mode:
+                    invalid_params_message = f"Invalid parameters: {exc!s}"
+                else:
+                    invalid_params_message = "Invalid parameters"
                 await self.send_error(
                     request.id,
                     JsonRpcErrorCode.INVALID_PARAMS,
-                    f"Invalid parameters: {exc!s}",
+                    invalid_params_message,
                     {"type": "TypeError", "method": method_name},
                 )
 

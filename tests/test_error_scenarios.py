@@ -1271,16 +1271,16 @@ class TestErrorDisclosure:
         assert call_args["error"]["message"] == "Internal server error"
 
     @pytest.mark.asyncio
-    async def test_parameter_errors_not_affected_by_debug_mode(
+    async def test_parameter_errors_keep_their_code_in_production_mode(
         self, method_invoker: RpcMethodInvoker, promise_manager: RpcPromiseManager
     ) -> None:
         """
-        Test that parameter validation errors are not affected by debug_mode.
+        Test that a TypeError from a call is INVALID_PARAMS without its text.
 
         Verifies that:
-        - INVALID_PARAMS errors still include error details
-        - These are client errors, not server errors
-        - Only INTERNAL_ERROR is sanitized in production mode
+        - The error keeps the INVALID_PARAMS code (not INTERNAL_ERROR)
+        - Production mode sends no exception text: a TypeError raised inside
+          a method can carry anything the method was handling
         """
         from fastapi_ws_rpc.config import RpcDebugConfig
 
@@ -1307,7 +1307,5 @@ class TestErrorDisclosure:
 
         assert call_args["error"]["code"] == JsonRpcErrorCode.INVALID_PARAMS.value
 
-        # Parameter errors should still include details (client error, not server error)
-        error_msg = call_args["error"]["message"]
-        assert "Invalid parameters:" in error_msg
-        assert error_msg != "Internal server error"  # Not sanitized
+        # The code still says "invalid parameters", but no exception text is sent
+        assert call_args["error"]["message"] == "Invalid parameters"

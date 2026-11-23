@@ -38,6 +38,7 @@ APPLICATION_ERROR_CODE = -32001
 APPLICATION_ERROR_MESSAGE = "Procedure failed"
 APPLICATION_ERROR_DATA = {"kind": "timed_out"}
 SECRET_CAUSE_TEXT = "secret-host:9200 password=hunter2"
+SECRET_TYPE_ERROR_TEXT = "secret-path /etc/x"
 
 # ============================================================================
 # Test Methods Classes
@@ -77,6 +78,10 @@ class ProtocolTestMethods(RpcMethodsBase):
         raise RpcApplicationError(
             APPLICATION_ERROR_CODE, APPLICATION_ERROR_MESSAGE, APPLICATION_ERROR_DATA
         )
+
+    async def method_raising_type_error_with_secret(self) -> None:
+        """Method whose own code raises a TypeError carrying sensitive text."""
+        raise TypeError(SECRET_TYPE_ERROR_TEXT)
 
     async def method_with_chained_application_error(self) -> None:
         """Method that reports a failure caused by an exception with secrets."""
@@ -1103,3 +1108,42 @@ class TestApplicationError:
         import fastapi_ws_rpc
 
         assert fastapi_ws_rpc.RpcApplicationError is RpcApplicationError
+
+
+class TestTypeErrorDisclosure:
+    """A TypeError's text reaches the caller only in debug mode."""
+
+    @pytest.mark.asyncio
+    async def test_type_error_text_is_not_sent_in_production_mode(
+        self, protocol_handler: RpcProtocolHandler, mock_send: AsyncMock
+    ) -> None:
+        request = JsonRpcRequest(
+            jsonrpc="2.0", id="te-1", method="method_raising_type_error_with_secret"
+        )
+
+        await protocol_handler.handle_request(request)
+
+        sent_message = mock_send.call_args[0][0]
+        assert sent_message["error"] == {
+            "code": JsonRpcErrorCode.INVALID_PARAMS.value,
+            "message": "Invalid parameters",
+            "data": {
+                "type": "TypeError",
+                "method": "method_raising_type_error_with_secret",
+            },
+        }
+        assert "secret-path" not in json.dumps(sent_message)
+
+    @pytest.mark.asyncio
+    async def test_type_error_text_is_sent_in_debug_mode(
+        self, debug_protocol_handler: RpcProtocolHandler, mock_send: AsyncMock
+    ) -> None:
+        request = JsonRpcRequest(
+            jsonrpc="2.0", id="te-2", method="method_raising_type_error_with_secret"
+        )
+
+        await debug_protocol_handler.handle_request(request)
+
+        error = _sent_error(mock_send)
+        assert error["code"] == JsonRpcErrorCode.INVALID_PARAMS.value
+        assert error["message"] == f"Invalid parameters: {SECRET_TYPE_ERROR_TEXT}"
