@@ -5,6 +5,16 @@ This module defines all custom exceptions raised by the library.
 All exceptions inherit from RpcError, which inherits from Exception.
 """
 
+from __future__ import annotations
+
+from typing import Any
+
+#: JSON-RPC 2.0 reserves -32768..-32000 for errors it defines itself. Inside
+#: that block, -32099..-32000 is left to implementations ("Server error"), so
+#: an application may use those codes, and any code outside the block.
+RESERVED_ERROR_CODE_MIN = -32768
+RESERVED_ERROR_CODE_MAX = -32100
+
 
 class RpcError(Exception):
     """
@@ -93,3 +103,51 @@ class RpcBackpressureError(RpcError):
     This is a production hardening feature to ensure system stability
     under high load or attack scenarios.
     """
+
+
+class RpcApplicationError(RpcError):
+    """
+    A JSON-RPC error that an RPC method writes itself, sent exactly as written.
+
+    Any other exception a method raises is replaced in production mode by a
+    generic ``-32603 Internal server error`` with no ``data``, so the caller
+    cannot tell one failure from another. Raise this instead to tell the caller
+    *what kind* of failure happened. The library sends ``code``, ``message`` and
+    ``data`` unchanged in every mode and never adds the exception's cause, so
+    the method decides exactly what leaves the process: put nothing in
+    ``message`` or ``data`` that the caller must not see.
+
+    Parameters
+    ----------
+    code : int
+        The JSON-RPC error code. Must not fall in -32768..-32100, the range
+        JSON-RPC 2.0 reserves for its own errors; -32099..-32000 and any code
+        outside -32768..-32000 are allowed.
+    message : str
+        A short, fixed description of the error.
+    data : dict[str, Any] | None, optional
+        Structured details for the caller, such as ``{"kind": "timed_out"}``.
+
+    Raises
+    ------
+    ValueError
+        If ``code`` is one JSON-RPC 2.0 reserves for its own errors.
+
+    Examples
+    --------
+    >>> raise RpcApplicationError(-32001, "Procedure failed", {"kind": "timed_out"})
+    """
+
+    def __init__(
+        self, code: int, message: str, data: dict[str, Any] | None = None
+    ) -> None:
+        if RESERVED_ERROR_CODE_MIN <= code <= RESERVED_ERROR_CODE_MAX:
+            raise ValueError(
+                f"JSON-RPC error code {code} is reserved by JSON-RPC 2.0; use "
+                f"-32099..-32000 or a code outside "
+                f"{RESERVED_ERROR_CODE_MIN}..-32000"
+            )
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.data = data

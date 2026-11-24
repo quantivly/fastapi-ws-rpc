@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from ..config import RpcDebugConfig
-from ..exceptions import RpcInvalidStateError
+from ..exceptions import RpcApplicationError, RpcInvalidStateError
 from ..logger import get_logger
 from ..rpc_methods import NoResponse
 from ..schemas import JsonRpcError, JsonRpcErrorCode, JsonRpcRequest, JsonRpcResponse
@@ -199,6 +199,21 @@ class RpcProtocolHandler:
                 )
                 await self._send(response.model_dump(exclude_none=True))
 
+        except RpcApplicationError as exc:
+            # The method wrote this error for the caller: send it as it is, in
+            # every mode. Its cause is never logged here or sent, because the
+            # method chose what to share; it logs the cause itself if needed.
+            logger.warning(
+                f"Method '{method_name}' reported application error {exc.code}",
+                extra={
+                    "method": method_name,
+                    "request_id": request.id,
+                    "error_code": exc.code,
+                },
+            )
+            if request.id is not None:
+                await self.send_error(request.id, exc.code, exc.message, exc.data)
+
         except TypeError as exc:
             # Invalid parameters (wrong arguments, missing required args, etc.)
             logger.exception(
@@ -210,10 +225,17 @@ class RpcProtocolHandler:
                 },
             )
             if request.id is not None:
+                # The TypeError may come from inside the method, carrying
+                # whatever the method was handling, so production mode sends
+                # no exception text (debug mode keeps it).
+                if self._debug_config.debug_mode:
+                    invalid_params_message = f"Invalid parameters: {exc!s}"
+                else:
+                    invalid_params_message = "Invalid parameters"
                 await self.send_error(
                     request.id,
                     JsonRpcErrorCode.INVALID_PARAMS,
-                    f"Invalid parameters: {exc!s}",
+                    invalid_params_message,
                     {"type": "TypeError", "method": method_name},
                 )
 
@@ -268,7 +290,7 @@ class RpcProtocolHandler:
     async def send_error(
         self,
         request_id: str | int | None,
-        error_code: JsonRpcErrorCode,
+        error_code: JsonRpcErrorCode | int,
         message: str,
         data: dict[str, Any] | None = None,
     ) -> None:
@@ -280,7 +302,8 @@ class RpcProtocolHandler:
 
         Args:
             request_id: The request ID to respond to, or None for parse errors
-            error_code: The JSON-RPC error code
+            error_code: The JSON-RPC error code: a standard JsonRpcErrorCode, or
+                an application's own code (see RpcApplicationError)
             message: Human-readable error message
             data: Optional additional error data
 
@@ -305,7 +328,7 @@ class RpcProtocolHandler:
             )
             ```
         """
-        error = JsonRpcError(code=error_code.value, message=message, data=data)
+        error = JsonRpcError(code=int(error_code), message=message, data=data)
         response = JsonRpcResponse(jsonrpc="2.0", id=request_id, error=error)
         response_dict = response.model_dump(exclude_none=True)
 

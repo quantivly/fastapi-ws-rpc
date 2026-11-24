@@ -5,7 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.0] - 2026-11-24
+
+### Added
+- **`RpcApplicationError`**: an RPC method can raise it with a JSON-RPC error code, a
+  message and `data` it wrote itself, and the handler sends exactly those in every mode,
+  production included. Any other exception still becomes a generic `-32603 Internal server
+  error` in production. The exception's cause is never logged by the handler or sent.
+  Codes JSON-RPC 2.0 reserves for its own errors (`-32768..-32100`) raise `ValueError`.
+- `RpcProtocolHandler.send_error` accepts a plain `int` code as well as a `JsonRpcErrorCode`.
+
+### Security
+- **A `TypeError`'s text is no longer sent in production mode.** A `TypeError` raised while a
+  method runs went out as `-32602 "Invalid parameters: <exception text>"` in every mode, and
+  it can come from inside the method, carrying whatever the method was handling. Production
+  mode now sends `"Invalid parameters"` with no text; debug mode keeps the text. The code and
+  `data` are unchanged.
+
+## [1.0.0 – 1.1.0] - 2025-11-05 / 2025-11-11
+
+These notes shipped with 1.0.0 and 1.1.0 but were never given a version heading.
+
 
 ### Added
 - **JSON-RPC 2.0 positional parameters support**: Parameters can now be provided as arrays (positional format) in addition to objects (named format). Positional parameters are automatically mapped to method parameter names by position, providing full JSON-RPC 2.0 spec compliance.
